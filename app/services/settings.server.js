@@ -38,7 +38,7 @@ export const SETTINGS_DEFAULTS = [
   ["WELCOME_EMAIL_LINK", "https://protocoltherapeutics.com/customer_authentication/login?return_to=/", "What [Link] resolves to. return_to is swapped for the role's own dashboard.", "welcome"],
   ["WELCOME_EMAIL_DELAY_MINUTES", "30", "Minutes to wait after an account is created before its welcome email goes out.", "welcome"],
   // --- sms
-  ["SMS_BODY", M.SMS_BODY_DEFAULT, 'SMS sent when the doctor checks "Also send by SMS". Placeholders: [name] [link] [validity] [doctor_name].', "sms"],
+  ["SMS_BODY", M.SMS_BODY_DEFAULT, 'SMS sent when the provider checks "Also send by SMS". Placeholders: [name] [link] [validity] [doctor_name].', "sms"],
   ["ABANDONED_SMS_ENABLED", "FALSE", "TRUE/FALSE - also text the patient (when the prescription has a phone) along with the abandoned-cart reminder email. Off until switched on: the Google scripts never sent this one.", "sms"],
   ["ABANDONED_SMS_BODY", M.ABANDONED_SMS_BODY_DEFAULT, "Placeholders: [First Name] (patient), [Last Name] (physician's last name), [View Your Protocol] (short link), [name] [link] [doctor_name].", "sms"],
   ["ORDER_PAID_SMS_ENABLED", "TRUE", "TRUE/FALSE - one-time SMS to the customer of EVERY paid order that has a phone on it.", "sms"],
@@ -68,15 +68,14 @@ export const SETTINGS_DEFAULTS = [
   ["BREVO_DEALS_STAGE_NAME", "New Lead", "Stage inside that pipeline.", "forms"],
   ["BREVO_DEAL_ATTRIBUTES_JSON", "", 'Optional JSON map of form field -> Brevo deal attribute internal name, e.g. {"practiceName":"practice_name"}.', "forms"],
   // --- commission
-  ["COMMISSION_PERCENT", "5", "Default commission % of purchased order totals, used when a doctor has no commission:X tag override", "commission"],
+  ["COMMISSION_PERCENT", "5", "Default commission % of purchased order totals, used when a provider has no commission:X tag override", "commission"],
   ["COMMISSION_PER_UNIT", "1", "Sales rep commission in dollars per product unit sold.", "commission"],
   // --- product copies
   ["PRODUCT_SYNC_DELETE_ORPHANS", "FALSE", "TRUE = when a practice's last portal account is removed, delete that practice's product copies (after it has been missing on two sync runs). FALSE = only report them on the Products page.", "products"],
   ["LOCATION_ID", "", "Shopify inventory location id used for shared inventory. Blank = the store's primary location. Changing it re-stocks every copy at the new location from the master list.", "products"],
   ["PRODUCT_VENDOR", "Protocol Therapeutics", "Vendor on product copies when the master has no Vendor of its own.", "products"],
   // --- misc
-  ["DEMO_IDS", "", "Comma-separated demo practice_id / clinic_id / doctor_id values. Demo orders are hidden from finance and never pay a rep.", "demo"],
-  ["PHYSICIAN_TAG", "doctor_id", "Tag name new physician ids are written under: doctor_id or provider_id (match what the store's theme reads). Both are always read.", "general"],
+  ["DEMO_IDS", "", "Comma-separated demo practice / clinic / provider id values. Demo orders are hidden from finance and never pay a rep.", "demo"],
   ["TIMEZONE", "America/New_York", "IANA timezone used for payout months and dashboard date ranges.", "general"],
   ["ORDER_SYNC_DAYS", "30", "How many days back the safety-net order sync re-checks Shopify.", "general"],
 ];
@@ -143,8 +142,13 @@ export async function setSettings(map) {
 }
 
 /** Rows for the admin Settings page: defaults merged with stored values. */
+// Settings that no longer exist - dropped from the database so they don't
+// show up as leftovers ("Other") on the Settings page.
+const RETIRED = ["PHYSICIAN_TAG"]; // provider ids are always tagged provider_id:
+
 export async function listSettings() {
   await connectDb();
+  await Setting.deleteMany({ key: { $in: RETIRED } });
   const stored = Object.fromEntries(
     (await Setting.find({}).lean()).map((r) => [r.key, r]),
   );

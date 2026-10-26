@@ -21,7 +21,7 @@ import { autoSync } from "../services/autosync.server";
 import { authenticate } from "../shopify.server";
 
 /* Orders & commissions - the ledger that used to be the "Order Commission
-   Log" tab: one row per order with its Doctor / Clinic / Practice / Rep split. */
+   Log" tab: one row per order with its Provider / Clinic / Practice / Rep split. */
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -136,7 +136,7 @@ export default function Orders() {
           <Form method="get">
             <InlineStack gap="300" blockAlign="end" wrap>
               <div style={{ minWidth: 280 }}>
-                <TextField label="Search" name="q" value={q} onChange={setQ} placeholder="Order #, email, doctor / clinic / practice / rep id" autoComplete="off" />
+                <TextField label="Search" name="q" value={q} onChange={setQ} placeholder="Order #, email, provider / clinic / practice / rep id" autoComplete="off" />
               </div>
               <Select
                 label="Show"
@@ -158,7 +158,7 @@ export default function Orders() {
         <Card padding="0">
           <DataTable
             columnContentTypes={["text", "text", "text", "text", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "text", "text"]}
-            headings={["Order", "Date", "Customer", "Doctor", "Clinic", "Practice", "Order total", "Doctor $", "Clinic $", "Practice $", "Rep $", "Delivery", "Ledger", ""]}
+            headings={["Order", "Date", "Customer", "Provider", "Clinic", "Practice", "Order total", "Provider $", "Clinic $", "Practice $", "Rep $", "Delivery", "Ledger", ""]}
             rows={data.rows.map((o) => [
               `${o.name}${o.wholesale ? " (wholesale)" : ""}${o.demo ? " (demo)" : ""}`,
               o.date,

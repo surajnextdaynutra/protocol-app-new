@@ -456,6 +456,22 @@ export const DemoAccount = model(
   "demo_accounts",
 );
 
+/** The master products a practice gets copies of, picked when the practice
+ *  is created on the Accounts page. No row = every master product (also the
+ *  ones added later). */
+const practiceProductsSchema = new Schema(
+  {
+    practiceId: { type: String, required: true, unique: true },
+    masterKeys: { type: [String], default: [] },
+  },
+  { timestamps: true },
+);
+export const PracticeProducts = model(
+  "PracticeProducts",
+  practiceProductsSchema,
+  "practice_products",
+);
+
 /* ---------------------------------------------------------------------------
    Logs. Capped by a TTL index so they never need pruning by hand.
    --------------------------------------------------------------------------- */

@@ -41,9 +41,10 @@ const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const ROLE_ALIASES = {
   practice: "Practice",
   practicedoctor: "Practice + Doctor", practiceanddoctor: "Practice + Doctor", practicephysician: "Practice + Doctor",
+  practiceprovider: "Practice + Doctor", practiceandprovider: "Practice + Doctor",
   masterclinic: "Master Clinic",
   clinic: "Clinic",
-  physician: "Physician", doctor: "Physician", dr: "Physician",
+  physician: "Physician", doctor: "Physician", dr: "Physician", provider: "Physician",
   salesrep: "Sales Rep", rep: "Sales Rep", salesrepresentative: "Sales Rep",
   demo: "Demo",
 };

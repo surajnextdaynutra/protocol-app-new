@@ -90,6 +90,9 @@ export const action = async ({ request }) => {
 function RepCard({ rep, practiceNames, busy, isNew }) {
   const [v, setV] = useState(rep);
   const set = (k) => (val) => setV((s) => ({ ...s, [k]: val }));
+  // every card posts the same fields; _card tells which one is saving
+  const card = isNew ? "new" : rep.repId;
+  const saving = useBusy((fd) => fd.get("_card") === card);
   const names = v.assigned
     .split(/[,\s]+/)
     .filter(Boolean)
@@ -98,6 +101,7 @@ function RepCard({ rep, practiceNames, busy, isNew }) {
   return (
     <Card>
       <Form method="post">
+        <input type="hidden" name="_card" value={card} />
         <FormLayout>
           <InlineStack align="space-between" blockAlign="center">
             <Text as="h2" variant="headingMd">{isNew ? "Add a sales rep" : `${v.name || v.repId}`}</Text>
@@ -132,7 +136,7 @@ function RepCard({ rep, practiceNames, busy, isNew }) {
           <input type="hidden" name="active" value={String(v.active)} />
           <InlineStack gap="400" blockAlign="center">
             <Checkbox label="Active (earns commission)" checked={v.active} onChange={set("active")} />
-            <Button submit variant="primary" loading={busy}>Save</Button>
+            <Button submit variant="primary" loading={saving} disabled={busy && !saving}>Save</Button>
           </InlineStack>
         </FormLayout>
       </Form>

@@ -1,9 +1,9 @@
 import { connectDb } from "../db.server";
 import { Account, SalesRep } from "../models/index.server";
 import { forgetCustomer } from "./caller.server";
-import { hasTag, idsFromCustomerTags, tagList } from "./ids.server";
+import { DOCTOR_TAG, hasTag, idsFromCustomerTags, tagList } from "./ids.server";
 import { logEvent } from "./log.server";
-import { getCustomer, gqlAll, legacyId } from "./shopify-admin.server";
+import { READ_ONLY, getCustomer, gqlAll, legacyId, setCustomerTags } from "./shopify-admin.server";
 import { invalidateResponses } from "./response-cache.server";
 
 /* The `accounts` collection: one document per portal user (practice master,
@@ -31,16 +31,35 @@ const isPortalUser = (tags) => {
 
 /** Normalised customer ({id, first, last, email, phone, tags, state,
  *  address}) -> upsert / remove its account document. */
+/* Accounts tagged before provider_id: carry doctor_id:<id>, which the theme
+   doesn't read (a provider would land on the clinic dashboard). The tag is
+   renamed in Shopify the next time the account is synced; the
+   customers/update webhook that follows already sees provider_id:. */
+async function renameDoctorTag(customerId, email, tags) {
+  const old = tags.find((t) => /^doctor_id:/i.test(t));
+  if (READ_ONLY || !old || tags.some((t) => /^provider_id:/i.test(t))) return tags;
+  const renamed = tags.map((t) => (t === old ? DOCTOR_TAG + t.slice(t.indexOf(":") + 1).trim() : t));
+  try {
+    await setCustomerTags(customerId, renamed);
+    logEvent("sync", email || customerId, `tag ${old} renamed to ${DOCTOR_TAG}${old.slice(old.indexOf(":") + 1).trim()}`);
+    return renamed;
+  } catch (err) {
+    logEvent("error", email || customerId, `could not rename tag ${old}: ${err.message || err}`, null, false);
+    return tags;
+  }
+}
+
 export async function upsertAccount(c) {
   invalidateResponses();
   await connectDb();
   const customerId = String(c.id);
   forgetCustomer(customerId);
-  const tags = tagList(c.tags);
+  let tags = tagList(c.tags);
   if (!isPortalUser(tags)) {
     await Account.deleteOne({ customerId });
     return null;
   }
+  tags = await renameDoctorTag(customerId, c.email, tags);
   const ids = idsFromCustomerTags(tags);
   const address = c.address || null;
   const doc = {

@@ -220,7 +220,7 @@ export async function listPracticeProducts(doctorId, clinicId, practiceId, viewe
   clinicId = String(clinicId || "").trim();
   practiceId = String(practiceId || "").trim();
   if (!doctorId && !clinicId && !practiceId) {
-    return { ok: false, error: "missing doctor, clinic, or practice id" };
+    return { ok: false, error: "missing provider, clinic, or practice id" };
   }
   await ensureMirror();
   const idQ = practiceId ? { practiceId } : clinicId ? { clinicId } : { doctorId };

@@ -11,9 +11,9 @@ export function tagList(tags) {
   return arr.map((t) => String(t).trim()).filter(Boolean);
 }
 
-/* The physician id tag has two names: doctor_id: (the test store) and
-   provider_id: (the live store). Every read accepts both; new tags are written
-   under the PHYSICIAN_TAG setting (doctorTagPrefix). */
+/* The physician id tag has two names: provider_id: (what the theme reads) and
+   the older doctor_id:. Every read accepts both; new tags are always written
+   as provider_id: (DOCTOR_TAG). */
 const TAG_ALIASES = [
   ["doctor_id:", "provider_id:"],
   ["wholesale_doctor_id:", "wholesale_provider_id:"],
@@ -41,11 +41,8 @@ export function doctorTagQuery(id) {
   return `(tag:'doctor_id:${id}' OR tag:'provider_id:${id}')`;
 }
 
-/** "doctor_id:" or "provider_id:" - the name new physician tags get. */
-export async function doctorTagPrefix() {
-  const s = await getSettings();
-  return /^provider_id:?$/i.test(String(s.PHYSICIAN_TAG || "").trim()) ? "provider_id:" : "doctor_id:";
-}
+/** The name new physician id tags are written under. */
+export const DOCTOR_TAG = "provider_id:";
 
 /** Value of a "prefix:value" tag ('' when absent). Case-insensitive prefix;
  *  doctor_id: / provider_id: are the same tag. */

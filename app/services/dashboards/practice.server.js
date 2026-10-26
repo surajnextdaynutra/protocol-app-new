@@ -73,7 +73,7 @@ export async function practiceDashboard({
   const cutoff = fromMs > 0 ? fromMs : days > 0 ? Date.now() - days * 86400000 : 0;
   const cutoffTo = toMs > 0 ? toMs : 0;
   if (!clinicArr.length && !doctorArr.length && !practice) {
-    return { ok: false, error: "missing clinic, doctor, or practice id" };
+    return { ok: false, error: "missing clinic, provider, or practice id" };
   }
 
   const out = {

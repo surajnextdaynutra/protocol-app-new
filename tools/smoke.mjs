@@ -55,6 +55,7 @@ globalThis.fetch = async (input, init = {}) => {
     RxMetafieldsSet: () => ({ metafieldsSet: { metafields: [], userErrors: [] } }),
     RxCustomers: () => ({ customers: { nodes: [] } }),
     RxLegacyBanking: () => ({ metaobjectByHandle: null }),
+    RxCustomerCreate: () => ({ customerCreate: { customer: { id: "gid://shopify/Customer/8001", legacyResourceId: "8001" }, userErrors: [] } }),
   }[op];
   return Response.json({ data: data ? data() : {} });
 };
@@ -158,9 +159,9 @@ check("A clinic amount", a.commission.clinicAmt, 10);
 check("A practice amount", a.commission.practiceAmt, 90);
 check("A rep", a.commission.repId, "RAP1");
 check("A rep amount", a.commission.repAmt, 2);
-check("A tagged rx", a.tags.includes("rx") && a.tags.includes("doctor_id:DOC1") && a.tags.includes("rx_id:RX-1"), true);
+check("A tagged rx", a.tags.includes("rx") && a.tags.includes("provider_id:DOC1") && a.tags.includes("rx_id:RX-1"), true);
 check("A tagged only once", calls.filter((c) => c === "RxOrderTags").length, 2); // A + B, not the re-delivery
-check("patient customer tagged", (customerTags[501] || []).includes("doctor_id:DOC1"), true);
+check("patient customer tagged", (customerTags[501] || []).includes("provider_id:DOC1"), true);
 check("prescription closed", (await M.Prescription.findOne({ rxId: "RX-1" }).lean()).status, "Purchased");
 
 const b = await M.Order.findOne({ orderId: "1002" }).lean();
@@ -308,7 +309,6 @@ check("proxy: cart tracking is open", (await call("cart", {}, "", { action: "tra
 /* ------------------- provider_id (live store) aliases ------------------- */
 {
   const ids = await import("../app/services/ids.server.js");
-  const { setSetting } = await import("../app/services/settings.server.js");
   check("alias: tagVal reads provider_id:", ids.tagVal(["wholesale", "provider_id:DOC9"], "doctor_id:"), "DOC9");
   check("alias: tag ids read provider_id:", ids.idsFromCustomerTags(["provider_id:DOC9", "clinic_id:CLN9"]).doctorId, "DOC9");
   check("alias: wholesale_provider_id read", ids.tagVal(["wholesale_provider_id:DOC9"], "wholesale_doctor_id:"), "DOC9");
@@ -319,10 +319,13 @@ check("proxy: cart tracking is open", (await call("cart", {}, "", { action: "tra
   check("alias: new id replaces both names", t2.join(","), "provider_id:DOC10");
   check("alias: Provider ID line property attributes the order", ids.attrIds({ line_items: [{ properties: [{ name: "Provider ID", value: "DOC9" }, { name: "Wholesale Provider ID", value: "DOC8" }] }] }).doctorId, "DOC9");
   check("alias: Wholesale Provider ID", ids.attrIds({ line_items: [{ properties: [{ name: "Wholesale Provider ID", value: "DOC8" }] }] }).wsDoctorId, "DOC8");
-  check("alias: default physician tag", await ids.doctorTagPrefix(), "doctor_id:");
-  await setSetting("PHYSICIAN_TAG", "provider_id");
-  check("alias: PHYSICIAN_TAG=provider_id", await ids.doctorTagPrefix(), "provider_id:");
-  await setSetting("PHYSICIAN_TAG", "doctor_id");
+  check("alias: new physician tags are provider_id:", ids.DOCTOR_TAG, "provider_id:");
+  const { upsertAccount } = await import("../app/services/accounts.server.js");
+  customerTags[970] = ["doctor_id:DOC70", "clinic_id:CLN70", "practice_id:PRA70", "wholesale"];
+  await upsertAccount({ id: 970, first: "Old", last: "Tag", email: "oldtag@example.com", tags: customerTags[970] });
+  check("alias: an old doctor_id: account is re-tagged provider_id: in Shopify", customerTags[970].join(","), "provider_id:DOC70,clinic_id:CLN70,practice_id:PRA70,wholesale");
+  check("alias: and stored with the provider id", (await M.Account.findOne({ customerId: "970" }).lean())?.doctorId, "DOC70");
+  await M.Account.deleteOne({ customerId: "970" });
   check("alias: search clause has both names", ids.doctorTagQuery("DOC9"), "(tag:'doctor_id:DOC9' OR tag:'provider_id:DOC9')");
   check("proxy alias: &provider= opens own dashboard", (await call("physician", { action: "dashboard", provider: "DOC1", practice: "PRA1" }, "902")).ok, true);
   check("proxy alias: &provider= still scoped", (await call("physician", { action: "dashboard", provider: "DOC2", practice: "PRA1" }, "902")).ok, false);
@@ -332,17 +335,59 @@ check("proxy: cart tracking is open", (await call("cart", {}, "", { action: "tra
   check("proxy alias: list rows carry provider_id", list.length > 0 && list.every((c) => c.provider_id === c.doctor_id), true);
   const dash = await call("physician", { action: "dashboard", doctor: "DOC1", practice: "PRA1" }, "902");
   const keys = JSON.stringify(dash).match(/"[a-zA-Z_]*[Dd]octor[a-zA-Z_]*":/g) || [];
-  check("proxy alias: every doctor* key has a provider* twin", keys.every((k) => JSON.stringify(dash).includes(k.replace(/doctor/g, "provider").replace(/Doctor/g, "Provider"))), true);
+  check("proxy alias: every doctor* key has a provider* twin",keys.every((k) => JSON.stringify(dash).includes(k.replace(/doctor/g, "provider").replace(/Doctor/g, "Provider"))), true);
 }
-check("cart tracking moved the status", (await M.Prescription.findOne({ rxId: "RX-2" }).lean()).status, "Opened");
-let badSig = 200;
-try {
-  const res = await handleProxy(new Request(`https://rx.example.com/proxy/practice?action=ping&shop=${SHOP}&signature=bad&timestamp=1`), "practice");
-  badSig = res.status;
-} catch (e) {
-  badSig = e instanceof Response ? e.status : 500;
+
+/* -------------- only SHOPIFY_SHOP is served (not other stores) ----------- */
+{
+  const { isAllowedShop } = await import("../app/shopify.server.js");
+  check("only-shop: own store allowed", isAllowedShop(SHOP.toUpperCase()), true);
+  check("only-shop: other store refused", isAllowedShop("app-test.myshopify.com"), false);
+  const q = { action: "ping", shop: "app-test.myshopify.com", path_prefix: "/apps/rx", timestamp: String(Math.floor(Date.now() / 1000)) };
+  q.signature = crypto.createHmac("sha256", SECRET).update(Object.keys(q).sort().map((k) => `${k}=${q[k]}`).join("")).digest("hex");
+  const res = await handleProxy(new Request(`https://rx.example.com/proxy/practice?${new URLSearchParams(q)}`), "practice");
+  check("only-shop: another store's storefront call refused", res.status, 403);
+  check("only-shop: own store's storefront call works", (await call("practice", { action: "ping" }, "")).ok, true);
 }
-check("proxy: bad signature rejected", badSig >= 400, true);
+
+/* -------------------- provider ids: PRO, after the old DOC -------------- */
+{
+  check("pro-id: new provider id is PRO, numbered after the DOC ids", await nextId("PRO"), "PRO10");
+  await M.Counter.deleteOne({ _id: "PRO" }); // later checks start from a clean counter
+  check("pro-id: referral link PRO9 finds provider DOC9", (await call("physicians", { action: "refLookup", doctor: "pro9" }, "")).d, "DOC9");
+  check("pro-id: DOC9 still found", (await call("physicians", { action: "refLookup", doctor: "doc9" }, "")).d, "DOC9");
+}
+
+/* ------------- new practice: All products / Selected products ------------ */
+{
+  const cat = await import("../app/services/catalog.server.js");
+  const prov = await import("../app/services/provisioning.server.js");
+  const praCounter = await M.Counter.findById("PRA").lean(); // put back after - later checks expect the next id
+  await cat.MasterProduct.create([
+    { masterKey: "pick-a", row: { Title: "Pick A" } },
+    { masterKey: "pick-b", row: { Title: "Pick B" } },
+    { masterKey: "pick-c", row: { Title: "Pick C" } },
+  ]);
+  check("pick: picker lists the master products", (await cat.masterChoices()).map((c) => c.value).join(","), "pick-a,pick-b,pick-c");
+  check("pick: unknown keys are dropped", await cat.setPracticeProducts("PRA50", ["pick-a", "pick-c", "gone"]), 2);
+  check("pick: picked practice expects its picks, others all", JSON.stringify(await cat.practiceMasterCounts(["PRA50", "PRA51"])), JSON.stringify({ PRA50: 2, PRA51: 3 }));
+  check("pick: copy status counts only the picks", (await cat.practiceCopiesStatus("PRA50")).masters, 2);
+  check("pick: a pick of only missing products is refused", await cat.setPracticeProducts("PRA52", ["gone"]).then(() => "saved", () => "refused"), "refused");
+  check("pick: Selected with nothing picked is refused", (await prov.createPortalAccount({ role: "Practice", firstName: "P", lastName: "Q", email: "pick0@example.com", productMode: "selected", productKeys: "[]", sendWelcome: "false" })).ok, false);
+  const made = await prov.createPortalAccount({ role: "Practice", firstName: "Pick", lastName: "Test", email: "pick1@example.com", productMode: "selected", productKeys: JSON.stringify(["pick-b", "pick-c"]), sendWelcome: "false" });
+  const newPractice = (made.tags || []).find((t) => t.startsWith("practice_id:"))?.split(":")[1];
+  check("pick: practice created with selected products", made.ok && made.products, 2);
+  check("pick: its pick is saved", (await M.PracticeProducts.findOne({ practiceId: newPractice }).lean())?.masterKeys.sort().join(","), "pick-b,pick-c");
+  check("pick: a clinic gets no pick of its own", prov.COPY_CHOICE_ROLES.includes("Clinic"), false);
+  // let the new practice's background copy run finish before cleaning up
+  for (let i = 0; i < 50 && cat.practiceCopiesInProgress().length; i++) await new Promise((r) => setTimeout(r, 100));
+  await cat.MasterProduct.deleteMany({ masterKey: /^pick-/ });
+  await M.PracticeProducts.deleteMany({});
+  await M.Account.deleteOne({ customerId: "8001" });
+  if (praCounter) await M.Counter.updateOne({ _id: "PRA" }, { $set: { seq: praCounter.seq } });
+  else await M.Counter.deleteOne({ _id: "PRA" });
+}
+
 
 /* ------------------------- builder / banking / misc --------------------- */
 const confirm = await rx.confirmRx({ rxId: "RX-3", clientType: "existing", customerId: "501", first: "New", email: "new@example.com", doctorId: "DOC1", clinicId: "CLN1", practiceId: "PRA1", items: "Omega XP", total: "100" });

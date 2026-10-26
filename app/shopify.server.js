@@ -38,9 +38,42 @@ const shopify = shopifyApp({
     : {}),
 });
 
+/* SHOPIFY_SHOP (.env) is the one store this app serves. Any other store it is
+   installed on is turned away: its admin can't open the app and its
+   storefront's /apps/rx calls are refused (its webhooks are ignored in
+   routes/webhooks.shopify.jsx). Blank = every installed store is served. */
+const ONLY_SHOP = String(process.env.SHOPIFY_SHOP || "").trim().toLowerCase();
+
+export function isAllowedShop(shop) {
+  return !ONLY_SHOP || String(shop || "").trim().toLowerCase() === ONLY_SHOP;
+}
+
+const otherStore = (shop) =>
+  new Response(`This app only works on ${ONLY_SHOP} - not on ${shop || "this store"}.`, {
+    status: 403,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+
 export default shopify;
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
-export const authenticate = shopify.authenticate;
+export const authenticate = {
+  ...shopify.authenticate,
+  admin: async (request) => {
+    const ctx = await shopify.authenticate.admin(request);
+    if (!isAllowedShop(ctx.session?.shop)) throw otherStore(ctx.session?.shop);
+    return ctx;
+  },
+  public: {
+    ...shopify.authenticate.public,
+    appProxy: async (request) => {
+      const ctx = await shopify.authenticate.public.appProxy(request);
+      // `shop` is one of the signed params, so it can't be swapped
+      const shop = new URL(request.url).searchParams.get("shop");
+      if (!isAllowedShop(shop)) throw otherStore(shop);
+      return ctx;
+    },
+  },
+};
 export const unauthenticated = shopify.unauthenticated;
 export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;

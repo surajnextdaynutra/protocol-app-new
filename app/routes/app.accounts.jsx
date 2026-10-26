@@ -7,6 +7,7 @@ import {
   Button,
   Card,
   Checkbox,
+  ChoiceList,
   DataTable,
   FormLayout,
   InlineStack,
@@ -20,14 +21,15 @@ import {
   TextField,
 } from "@shopify/polaris";
 
-import { ActionResult, Pager, SyncStatus, dateTime, paging, rx, useBusy } from "../components/admin";
+import { ActionResult, Pager, SyncStatus, dateTime, paging, roleLabel, rx, useBusy } from "../components/admin";
 import { connectDb } from "../db.server";
 import { Account, Product, SalesRep } from "../models/index.server";
-import { MasterProduct, practiceCopiesInProgress } from "../services/catalog.server";
+import { masterChoices, practiceCopiesInProgress, practiceMasterCounts } from "../services/catalog.server";
 import { syncAllAccounts } from "../services/accounts.server";
 import { BULK_TEMPLATE_HEADER, bulkJobStatus, previewBulkAccounts, startBulkImport } from "../services/bulk-accounts.server";
 import { autoSync } from "../services/autosync.server";
 import {
+  COPY_CHOICE_ROLES,
   ROLES,
   createPortalAccount,
   deletePortalAccount,
@@ -91,14 +93,16 @@ export const loader = async ({ request }) => {
   // practice (or a clinic / physician under it) is added; the page polls
   // while any are still being created.
   const pracIds = [...new Set(rows.filter((a) => a.practiceId).map((a) => a.practiceId))];
-  const [copyCounts, masterCount] = await Promise.all([
+  const [copyCounts, expected, productChoices] = await Promise.all([
     pracIds.length
       ? Product.aggregate([
           { $match: { practiceId: { $in: pracIds }, masterKey: { $ne: "" } } },
           { $group: { _id: "$practiceId", n: { $sum: 1 } } },
         ])
       : [],
-    MasterProduct.countDocuments(),
+    // a practice created with "Selected products" expects only those
+    practiceMasterCounts(pracIds),
+    masterChoices(),
   ]);
   const copies = Object.fromEntries(copyCounts.map((c) => [c._id, c.n]));
   const creating = new Set(practiceCopiesInProgress());
@@ -107,38 +111,43 @@ export const loader = async ({ request }) => {
     q, role, page, pageSize, total,
     roles: roles.filter(Boolean).sort(),
     roleOptions: ROLES,
+    copyChoiceRoles: COPY_CHOICE_ROLES,
+    productChoices,
     welcomeDelay: Number(cfg.WELCOME_EMAIL_DELAY_MINUTES) >= 0 ? Number(cfg.WELCOME_EMAIL_DELAY_MINUTES) : 30,
     bulkTemplate: BULK_TEMPLATE_HEADER,
     practiceOptions: practices.map((a) => ({ label: label(a, a.practiceId), value: a.practiceId })),
     clinicOptions: clinics.map((a) => ({ label: label(a, a.clinicId), value: a.clinicId })),
     repOptions: reps.map((r) => ({ label: `${r.name || r.repId} (${r.repId})`, value: r.repId })),
-    rows: rows.map((a) => ({
-      customerId: a.customerId,
-      role: a.role,
-      name: `${a.first} ${a.last}`.trim(),
-      company: a.company,
-      email: a.email,
-      ids: [a.repId, (a.tags || []).find((t) => /^admin_id:/i.test(t))?.split(":")[1]?.trim(), a.practiceId, a.clinicId, a.doctorId]
-        .filter(Boolean).join(" · "),
-      // practice / clinic / physician: "creating" | number of this practice's product copies
-      copies: a.practiceId
-        ? creating.has(a.practiceId) ? "creating" : copies[a.practiceId] || 0
-        : null,
-      masterCount,
-      state: a.state,
-      demo: a.demo,
-      provisioned: !!a.provisionedAt,
-      welcome: a.welcomeEmailSentAt
-        ? "Sent " + dateTime(a.welcomeEmailSentAt)
-        : a.welcomeResult ||
-          (a.welcomeDueAt
-            ? // a practice / clinic / physician welcome waits for the practice's products
-              a.practiceId &&
-              (creating.has(a.practiceId) || (masterCount && (copies[a.practiceId] || 0) < masterCount))
-              ? "Waiting for products - sends when ready"
-              : "Due " + dateTime(a.welcomeDueAt)
-            : ""),
-    })),
+    rows: rows.map((a) => {
+      const masterCount = a.practiceId ? expected[a.practiceId] || 0 : 0;
+      return {
+        customerId: a.customerId,
+        role: a.role,
+        name: `${a.first} ${a.last}`.trim(),
+        company: a.company,
+        email: a.email,
+        ids: [a.repId, (a.tags || []).find((t) => /^admin_id:/i.test(t))?.split(":")[1]?.trim(), a.practiceId, a.clinicId, a.doctorId]
+          .filter(Boolean).join(" · "),
+        // practice / clinic / physician: "creating" | number of this practice's product copies
+        copies: a.practiceId
+          ? creating.has(a.practiceId) ? "creating" : copies[a.practiceId] || 0
+          : null,
+        masterCount,
+        state: a.state,
+        demo: a.demo,
+        provisioned: !!a.provisionedAt,
+        welcome: a.welcomeEmailSentAt
+          ? "Sent " + dateTime(a.welcomeEmailSentAt)
+          : a.welcomeResult ||
+            (a.welcomeDueAt
+              ? // a practice / clinic / physician welcome waits for the practice's products
+                a.practiceId &&
+                (creating.has(a.practiceId) || (masterCount && (copies[a.practiceId] || 0) < masterCount))
+                ? "Waiting for products - sends when ready"
+                : "Due " + dateTime(a.welcomeDueAt)
+              : ""),
+      };
+    }),
   };
 };
 
@@ -156,6 +165,11 @@ export const action = async ({ request }) => {
       if (res.updated && res.welcomeAlreadySent) message += " · Welcome email was already sent before, so it isn't sent again.";
       if (res.tags.some((t) => /^(doctor_id|provider_id):/i.test(t))) {
         message += " · Its practice's products are being created automatically; the welcome email goes out once they are ready.";
+      }
+      if (res.products === "kept") {
+        message += " · This practice already had product copies, so it keeps them - the product pick only applies to a new practice.";
+      } else if (res.products) {
+        message += ` · Product copies: ${res.products} selected product${res.products === 1 ? "" : "s"}.`;
       }
       return { ok: true, message };
     }
@@ -196,10 +210,15 @@ function CreateForm({ data, busy, onBulk }) {
     role: "Practice", firstName: "", lastName: "", email: "", clinicLocation: "",
     repId: "", parentPracticeId: "", parentClinicId: "", sendWelcome: true,
   });
+  const [productMode, setProductMode] = useState("all");
+  const [picked, setPicked] = useState([]);
   const set = (k) => (val) => setV((s) => ({ ...s, [k]: val }));
+  const creating = useBusy("create");
   const needsPractice = v.role === "Clinic";
   const optionalPractice = v.role === "Master Clinic";
   const needsClinic = v.role === "Physician";
+  const copyChoice = data.copyChoiceRoles.includes(v.role);
+  const pickMissing = copyChoice && productMode === "selected" && !picked.length;
   const takesRep = !["Sales Rep", "Finance Admin", "Demo"].includes(v.role);
 
   return (
@@ -209,7 +228,7 @@ function CreateForm({ data, busy, onBulk }) {
         <FormLayout>
           <Text as="h2" variant="headingMd">Create an account</Text>
           <FormLayout.Group>
-            <Select label="Role" name="role" value={v.role} onChange={set("role")} options={data.roleOptions.map((r) => ({ label: r, value: r }))}
+            <Select label="Role" name="role" value={v.role} onChange={set("role")} options={data.roleOptions.map((r) => ({ label: roleLabel(r), value: r }))}
               helpText={v.role === "Demo" ? "Creates the shared demo Practice / Clinic / Physician trio from one email." : undefined} />
             <TextField label="First name" name="firstName" value={v.firstName} onChange={set("firstName")} autoComplete="off" />
             <TextField label="Last name" name="lastName" value={v.lastName} onChange={set("lastName")} autoComplete="off" disabled={v.role === "Demo"} />
@@ -236,6 +255,10 @@ function CreateForm({ data, busy, onBulk }) {
                   : "Shown on the storefront as the clinic name."} autoComplete="off" />
             ) : null}
           </FormLayout.Group>
+          {copyChoice ? (
+            <ProductPick choices={data.productChoices} mode={productMode} setMode={setProductMode}
+              picked={picked} setPicked={setPicked} />
+          ) : null}
           {v.role !== "Demo" ? (
             <InlineStack gap="300" blockAlign="start">
               {/* unticked Polaris checkboxes post nothing - send the value explicitly */}
@@ -250,12 +273,57 @@ function CreateForm({ data, busy, onBulk }) {
             </InlineStack>
           ) : null}
           <InlineStack gap="300">
-            <Button submit variant="primary" loading={busy}>Create in Shopify</Button>
+            <Button submit variant="primary" loading={creating} disabled={(busy && !creating) || pickMissing}>Create in Shopify</Button>
             <Button onClick={onBulk}>Add bulk accounts</Button>
           </InlineStack>
         </FormLayout>
       </Form>
     </Card>
+  );
+}
+
+/* "All products" / "Selected products" for a role that starts a new practice:
+   which master products that practice gets copies of. The search only narrows
+   the list - picks that are filtered out stay picked. */
+function ProductPick({ choices, mode, setMode, picked, setPicked }) {
+  const [find, setFind] = useState("");
+  const term = find.trim().toLowerCase();
+  const shown = term ? choices.filter((c) => c.label.toLowerCase().includes(term)) : choices;
+  return (
+    <BlockStack gap="200">
+      <input type="hidden" name="productMode" value={mode} />
+      <input type="hidden" name="productKeys" value={JSON.stringify(mode === "selected" ? picked : [])} />
+      <ChoiceList
+        title="Products for this practice"
+        choices={[
+          { label: `All products (${choices.length})`, value: "all", helpText: "Copies every master product - and ones added later." },
+          { label: "Selected products", value: "selected", helpText: "Copies only the products picked below." },
+        ]}
+        selected={[mode]}
+        onChange={(v) => setMode(v[0])}
+      />
+      {mode === "selected" ? (
+        choices.length ? (
+          <BlockStack gap="200">
+            <InlineStack gap="200" blockAlign="center">
+              <TextField label="Find a product" labelHidden placeholder="Find a product" value={find} onChange={setFind} autoComplete="off" />
+              <Button onClick={() => setPicked([...new Set([...picked, ...shown.map((c) => c.value)])])}>
+                {term ? "Select shown" : "Select all"}
+              </Button>
+              <Button onClick={() => setPicked([])} disabled={!picked.length}>Clear</Button>
+              <Text as="span" tone={picked.length ? "subdued" : "critical"}>
+                {picked.length} of {choices.length} selected
+              </Text>
+            </InlineStack>
+            <div style={{ maxHeight: 280, overflowY: "auto" }}>
+              <ChoiceList allowMultiple title="Products" titleHidden choices={shown} selected={picked} onChange={setPicked} />
+            </div>
+          </BlockStack>
+        ) : (
+          <Text as="p" tone="critical">There are no master products yet - add them on the Products page first.</Text>
+        )
+      ) : null}
+    </BlockStack>
   );
 }
 
@@ -344,7 +412,7 @@ function BulkModal({ open, onClose, data }) {
               columnContentTypes={["numeric", "text", "text", "text"]}
               headings={["Row", "Email", "Role", "Result"]}
               rows={(job?.results || []).map((r) => [
-                r.line, r.email, r.role,
+                r.line, r.email, roleLabel(r.role),
                 <Text key={r.line} as="span" tone={r.ok ? "success" : "critical"}>{r.message}</Text>,
               ])}
             />
@@ -355,7 +423,7 @@ function BulkModal({ open, onClose, data }) {
               Upload a CSV with these columns: <b>Role, First Name, Last Name, Email</b> (required) and <b>Sales Rep,
               Clinic Location, Parent Practice, Parent Clinic, Send Welcome</b> (optional). A Clinic needs a Parent Practice
               and a Physician a Parent Clinic - a PRA… / CLN… id, its tag (practice_id:PRA1 / clinic_id:CLN1), the email of
-              that practice / clinic account (a Practice + Doctor works for both), or the email of a row in the same file.
+              that practice / clinic account (a Practice + Provider works for both), or the email of a row in the same file.
               Sales Rep is a RAP id, rep email or rep name.
             </Text>
             <InlineStack gap="400" blockAlign="center">
@@ -379,7 +447,7 @@ function BulkModal({ open, onClose, data }) {
                   rows={preview.rows.map((r) => [
                     r.line,
                     <Badge key={r.line} tone={STATUS_TONE[r.status]}>{STATUS_TEXT[r.status]}</Badge>,
-                    r.role, r.name, r.email, r.parent, r.rep,
+                    roleLabel(r.role), r.name, r.email, r.parent, r.rep,
                     <Text key={r.line + "m"} as="span" tone={r.status === "error" ? "critical" : "subdued"}>{r.message || r.clinicLocation}</Text>,
                   ])}
                 />
@@ -496,7 +564,7 @@ function EditModal({ row, repOptions, onClose }) {
             <FormLayout>
               <Text as="h3" variant="headingSm">Portal</Text>
               <BlockStack gap="100">
-                <Text as="p" tone="subdued">Role: {detail.role || "-"} · Login: {detail.state || "-"}</Text>
+                <Text as="p" tone="subdued">Role: {roleLabel(detail.role) || "-"} · Login: {detail.state || "-"}</Text>
                 <InlineStack gap="100">{detail.systemTags.map((t) => <Tag key={t}>{t}</Tag>)}</InlineStack>
                 <Text as="p" variant="bodySm" tone="subdued">
                   Role and id tags are fixed here so an edit can't change the account's role.
@@ -559,7 +627,7 @@ function DeleteModal({ row, onClose }) {
         <BlockStack gap="300">
           {fetcher.data?.ok === false ? <Banner tone="critical"><p>{fetcher.data.message}</p></Banner> : null}
           <Text as="p">
-            This permanently deletes <b>{row?.email}</b> ({row?.role}{row?.ids ? `, ${row.ids}` : ""}) from your Shopify
+            This permanently deletes <b>{row?.email}</b> ({roleLabel(row?.role)}{row?.ids ? `, ${row.ids}` : ""}) from your Shopify
             store. They lose portal access straight away. This can't be undone.
           </Text>
           <Text as="p">
@@ -619,7 +687,7 @@ export default function Accounts() {
                 <TextField label="Search" name="q" value={q} onChange={setQ} placeholder="Name, email, business, any id" autoComplete="off" />
               </div>
               <Select label="Role" name="role" value={role} onChange={setRole}
-                options={[{ label: "All roles", value: "" }, ...data.roles.map((r) => ({ label: r, value: r }))]} />
+                options={[{ label: "All roles", value: "" }, ...data.roles.map((r) => ({ label: roleLabel(r), value: r }))]} />
               <Button submit variant="primary">Filter</Button>
             </InlineStack>
           </Form>
@@ -629,7 +697,7 @@ export default function Accounts() {
             columnContentTypes={["text", "text", "text", "text", "text", "text", "text", "text"]}
             headings={["Role", "Name", "Business", "Email", "IDs", "Login", "Welcome email", ""]}
             rows={data.rows.map((a) => [
-              <InlineStack key={a.customerId} gap="100">{a.role}{a.demo ? <Badge tone="info">Demo</Badge> : null}</InlineStack>,
+              <InlineStack key={a.customerId} gap="100">{roleLabel(a.role)}{a.demo ? <Badge tone="info">Demo</Badge> : null}</InlineStack>,
               a.name, a.company, a.email,
               <BlockStack key={a.customerId + "i"} gap="050">
                 <span>{a.ids}</span>

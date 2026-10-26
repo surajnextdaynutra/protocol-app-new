@@ -1,7 +1,7 @@
 import { connectDb } from "../db.server";
 import { Order, Prescription, RX_OPEN_STATUSES } from "../models/index.server";
 import { fillTemplate, sendEmail, sendSms, shortenUrl } from "./brevo.server";
-import { doctorTagPrefix, doctorTagQuery, drName, hasTag, isDemoIds, parseAmount, tagList, tagVals } from "./ids.server";
+import { DOCTOR_TAG, doctorTagQuery, drName, hasTag, isDemoIds, parseAmount, tagList, tagVals } from "./ids.server";
 import { logEvent, withLock } from "./log.server";
 import { getSettings, isTrue } from "./settings.server";
 import {
@@ -261,7 +261,7 @@ async function createShopifyPatient(d) {
 
     const tags = [];
     if (d.patientId) tags.push("patient", "patient_id:" + d.patientId);
-    if (d.doctorId) tags.push((await doctorTagPrefix()) + d.doctorId);
+    if (d.doctorId) tags.push(DOCTOR_TAG + d.doctorId);
     if (d.clinicId) tags.push("clinic_id:" + d.clinicId);
     if (d.practiceId) tags.push("practice_id:" + d.practiceId);
     if (await isDemoIds(d)) tags.push("rx_demo");

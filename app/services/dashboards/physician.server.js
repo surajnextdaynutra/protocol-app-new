@@ -35,7 +35,7 @@ export async function physicianDashboard({
   practice = String(practice || "").trim();
   days = Number(days) || 0;
   const cutoff = days > 0 ? Date.now() - days * 86400000 : 0;
-  if (!clinic && !doctor) return { ok: false, error: "missing clinic or doctor id" };
+  if (!clinic && !doctor) return { ok: false, error: "missing clinic or provider id" };
 
   // Fails open toward solo, like the page's own check for the same question.
   let pInfo = null;

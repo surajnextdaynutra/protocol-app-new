@@ -92,6 +92,7 @@ function ImportCard({ kinds, busy }) {
   const [kind, setKind] = useState(kinds[0].id);
   const [csv, setCsv] = useState("");
   const [fileName, setFileName] = useState("");
+  const importing = useBusy("import");
   const onFile = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -121,7 +122,7 @@ function ImportCard({ kinds, busy }) {
             </div>
           </FormLayout.Group>
           <InlineStack>
-            <Button submit variant="primary" disabled={!csv} loading={busy}>Import</Button>
+            <Button submit variant="primary" disabled={!csv || (busy && !importing)} loading={importing}>Import</Button>
           </InlineStack>
         </FormLayout>
       </Form>
@@ -134,6 +135,7 @@ export default function System() {
   const actionData = useActionData();
   const submit = useSubmit();
   const busy = useBusy();
+  const backfilling = useBusy("backfill");
   const [since, setSince] = useState("");
   const [type, setType] = useState(data.type);
 
@@ -168,7 +170,7 @@ export default function System() {
               </Text>
               <InlineStack gap="300" blockAlign="end">
                 <TextField label="From date (blank = everything)" name="since" type="date" value={since} onChange={setSince} autoComplete="off" />
-                <Button submit loading={busy}>Start import</Button>
+                <Button submit loading={backfilling} disabled={busy && !backfilling}>Start import</Button>
               </InlineStack>
             </FormLayout>
           </Form>

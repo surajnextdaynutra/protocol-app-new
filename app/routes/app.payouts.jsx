@@ -15,7 +15,7 @@ import {
   TextField,
 } from "@shopify/polaris";
 
-import { ActionResult, Pager, StatusBadge, dateTime, day, money, paging, rx, useBusy } from "../components/admin";
+import { ActionResult, Pager, StatusBadge, dateTime, day, money, paging, roleLabel, rx, useBusy } from "../components/admin";
 import { BankingRecord } from "../components/banking-record";
 import { connectDb } from "../db.server";
 import { Account, MonthlyPayout, SalesRep } from "../models/index.server";
@@ -141,8 +141,8 @@ export const action = async ({ request }) => {
   return {
     ok: true,
     message: status === "Paid"
-      ? `${r.role} ${r.entityId} - ${r.month}: ${money(r.amount)} marked Paid.`
-      : `${r.role} ${r.entityId} - ${r.month}: back to Pending - ${money(r.amount)} owed${res.merged ? " (joined with the newer unpaid commission)" : ""}.`,
+      ? `${roleLabel(r.role)} ${r.entityId} - ${r.month}: ${money(r.amount)} marked Paid.`
+      : `${roleLabel(r.role)} ${r.entityId} - ${r.month}: back to Pending - ${money(r.amount)} owed${res.merged ? " (joined with the newer unpaid commission)" : ""}.`,
   };
 };
 
@@ -151,6 +151,7 @@ export default function Payouts() {
   const actionData = useActionData();
   const submit = useSubmit();
   const busy = useBusy();
+  const applying = useBusy("rebuild-apply");
   const [q, setQ] = useState(data.q);
   const [role, setRole] = useState(data.role);
   const [status, setStatus] = useState(data.status);
@@ -197,11 +198,11 @@ export default function Payouts() {
         <Card>
           <Form method="get">
             <InlineStack gap="300" blockAlign="end" wrap>
-              <TextField label="ID" name="q" value={q} onChange={setQ} placeholder="PRA… / DOC… / RAP…" autoComplete="off" />
+              <TextField label="ID" name="q" value={q} onChange={setQ} placeholder="PRA… / PRO… / RAP…" autoComplete="off" />
               <Select label="Month" name="month" value={month} onChange={setMonth}
                 options={[{ label: "All months", value: "" }, ...data.months.map((m) => ({ label: m, value: m }))]} />
               <Select label="Role" name="role" value={role} onChange={setRole}
-                options={[{ label: "All roles", value: "" }, "Practice", "Doctor", "Rep", "Clinic"].map((o) => (typeof o === "string" ? { label: o, value: o } : o))} />
+                options={[{ label: "All roles", value: "" }, "Practice", "Doctor", "Rep", "Clinic"].map((o) => (typeof o === "string" ? { label: roleLabel(o), value: o } : o))} />
               <Select label="Status" name="status" value={status} onChange={setStatus}
                 options={[{ label: "All", value: "" }, { label: "Pending", value: "Pending" }, { label: "Paid", value: "Paid" }]} />
               <Button submit variant="primary">Filter</Button>
@@ -214,7 +215,7 @@ export default function Payouts() {
             headings={["Month", "Role", "ID", "Name", "Amount", "Status", "Date paid", "Transaction #", ""]}
             rows={data.rows.map((r) => [
               r.seq ? <InlineStack key={r.id + "m"} gap="100">{r.month}<Badge>{`#${r.seq + 1}`}</Badge></InlineStack> : r.month,
-              r.role, r.entityId, r.name, money(r.amount),
+              roleLabel(r.role), r.entityId, r.name, money(r.amount),
               <StatusBadge key={r.id} status={r.status} />,
               r.datePaid, r.transactionNo,
               <InlineStack key={r.id + "a"} gap="200" wrap={false} align="end">
@@ -234,7 +235,7 @@ export default function Payouts() {
       <Modal
         open={!!paying}
         onClose={() => setPaying(null)}
-        title={paying ? `Mark paid - ${paying.role} ${paying.entityId} (${paying.month})` : ""}
+        title={paying ? `Mark paid - ${roleLabel(paying.role)} ${paying.entityId} (${paying.month})` : ""}
         primaryAction={{ content: "Mark paid", onAction: () => save(paying, "Paid"), disabled: busy }}
         secondaryActions={[{ content: "Cancel", onAction: () => setPaying(null) }]}
       >
@@ -251,7 +252,7 @@ export default function Payouts() {
       <Modal
         open={!!bankFor}
         onClose={() => setBankFor(null)}
-        title={bankFor ? `Bank details - ${bankFor.role} ${bankFor.entityId}${bankFor.name ? " (" + bankFor.name + ")" : ""}` : ""}
+        title={bankFor ? `Bank details - ${roleLabel(bankFor.role)} ${bankFor.entityId}${bankFor.name ? " (" + bankFor.name + ")" : ""}` : ""}
         primaryAction={
           bankFor && bankFor.status !== "Paid" && bank?.found
             ? { content: "Mark paid", onAction: () => { setPaying(bankFor); setBankFor(null); } }
@@ -290,7 +291,7 @@ export default function Payouts() {
         title="Payout totals that differ from the orders"
         primaryAction={{
           content: "Correct these amounts",
-          loading: busy,
+          loading: applying,
           onAction: () => { submit({ intent: "rebuild-apply" }, { method: "post" }); setRebuild(null); },
         }}
         secondaryActions={[{ content: "Cancel", onAction: () => setRebuild(null) }]}
@@ -306,7 +307,7 @@ export default function Payouts() {
               columnContentTypes={["text", "text", "text", "numeric", "numeric", "text"]}
               headings={["Month", "Role", "ID", "Now", "Should be", "Status"]}
               rows={(rebuild?.changes || []).map((c) => [
-                c.month, c.role, c.entityId, c.from === null ? "(missing)" : money(c.from), money(c.to), c.status,
+                c.month, roleLabel(c.role), c.entityId, c.from === null ? "(missing)" : money(c.from), money(c.to), c.status,
               ])}
             />
             {(rebuild?.changed || 0) + (rebuild?.created || 0) > (rebuild?.changes || []).length ? (

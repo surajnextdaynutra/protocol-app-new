@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import mongoose, { connectDb } from "../db.server";
-import { Account, Product } from "../models/index.server";
+import { Account, PracticeProducts, Product } from "../models/index.server";
 import { copyMasterKey, idsFromCustomerTags, tagList, tagVal } from "./ids.server";
 import { kvGet, kvSet, logEvent, withLock } from "./log.server";
 import { getSettings, isTrue } from "./settings.server";
@@ -116,6 +116,59 @@ async function newMasterKey(title) {
 export async function listMasters() {
   await connectDb();
   return MasterProduct.find({}).sort({ masterKey: 1 }).lean();
+}
+
+/* ---------------- which products a practice gets copies of ---------------- */
+
+/** Master products as { value: masterKey, label: title } for the "Selected
+ *  products" picker on the Accounts page. */
+export async function masterChoices() {
+  const masters = await listMasters();
+  return masters
+    .map((m) => ({ value: m.masterKey, label: String(m.row?.[P.TITLE] || m.masterKey) }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Saves the products a new practice gets copies of. `masterKeys` empty =
+ *  every product. Unknown keys are dropped. Returns the number kept. */
+export async function setPracticeProducts(practiceId, masterKeys) {
+  await connectDb();
+  practiceId = String(practiceId || "").trim();
+  if (!practiceId) return 0;
+  const wanted = [...new Set((masterKeys || []).map((k) => String(k).trim()).filter(Boolean))];
+  if (!wanted.length) {
+    await PracticeProducts.deleteOne({ practiceId });
+    return 0;
+  }
+  const known = await MasterProduct.distinct("masterKey", { masterKey: { $in: wanted } });
+  // an empty list would mean "every product" - the opposite of the pick
+  if (!known.length) throw new Error("None of the picked products exist any more - pick again.");
+  await PracticeProducts.updateOne({ practiceId }, { $set: { masterKeys: known } }, { upsert: true });
+  return known.length;
+}
+
+/** Mongo filter for the masters this practice gets copies of ({} = all). */
+async function practiceMasterFilter(practiceId) {
+  const row = await PracticeProducts.findOne({ practiceId }, { masterKeys: 1 }).lean();
+  return row?.masterKeys?.length ? { masterKey: { $in: row.masterKeys } } : {};
+}
+
+/** The practice's share of `masters` - its picked products, else all. */
+async function mastersForPractice(practiceId, masters) {
+  const filter = await practiceMasterFilter(practiceId);
+  if (!filter.masterKey) return masters;
+  const keep = new Set(filter.masterKey.$in);
+  return masters.filter((m) => keep.has(m.masterKey));
+}
+
+/** How many master products each practice should have copies of. */
+export async function practiceMasterCounts(practiceIds) {
+  const [all, rows] = await Promise.all([
+    MasterProduct.countDocuments(),
+    PracticeProducts.find({ practiceId: { $in: practiceIds } }, { practiceId: 1, masterKeys: 1 }).lean(),
+  ]);
+  const picked = Object.fromEntries(rows.filter((r) => r.masterKeys?.length).map((r) => [r.practiceId, r.masterKeys.length]));
+  return Object.fromEntries(practiceIds.map((id) => [id, picked[id] ?? all]));
 }
 
 /** Create / update one master from a { column: value } row. A blank Master
@@ -1268,7 +1321,7 @@ export function runProductSync() {
     };
     for (const master of masters) await run(master, baseTarget(master));
     for (const practiceId of practices) {
-      for (const master of masters) {
+      for (const master of await mastersForPractice(practiceId, masters)) {
         if (await kvGet(removedKey(practiceId))) break; // its last account was deleted mid-run
         await run(master, practiceTarget(master, practiceId));
       }
@@ -1304,9 +1357,10 @@ export function syncPracticeCopies(practiceId) {
  */
 export async function practiceCopiesStatus(practiceId) {
   await connectDb();
+  const only = await practiceMasterFilter(practiceId);
   const [masters, finished] = await Promise.all([
-    MasterProduct.countDocuments(),
-    MasterProduct.countDocuments({ [`sigs.practice:${practiceId}`]: { $exists: true } }),
+    MasterProduct.countDocuments(only),
+    MasterProduct.countDocuments({ ...only, [`sigs.practice:${practiceId}`]: { $exists: true } }),
   ]);
   const inProgress = copiesInProgress.has(String(practiceId));
   return { masters, finished, inProgress, done: !inProgress && finished >= masters };
@@ -1339,10 +1393,11 @@ export async function ensurePracticeCopies(practiceId) {
     await connectDb();
     // Complete = it has copies AND every master's copy finished its sync
     // (a half-built copy from a failed run has no fingerprint yet).
+    const only = await practiceMasterFilter(practiceId);
     const [hasCopies, masters, finished] = await Promise.all([
       Product.exists({ practiceId, masterKey: { $ne: "" } }),
-      MasterProduct.countDocuments(),
-      MasterProduct.countDocuments({ [`sigs.practice:${practiceId}`]: { $exists: true } }),
+      MasterProduct.countDocuments(only),
+      MasterProduct.countDocuments({ ...only, [`sigs.practice:${practiceId}`]: { $exists: true } }),
     ]);
     if (hasCopies && finished >= masters) return { skipped: "has copies" };
     return await runPracticeCopies(practiceId);
@@ -1357,7 +1412,8 @@ function runPracticeCopies(practiceId) {
     await connectDb();
     fileMap = null;
     publications = null;
-    const masters = await MasterProduct.find({}).lean();
+    // only the products picked for this practice, if it was given a pick
+    const masters = await mastersForPractice(practiceId, await MasterProduct.find({}).lean());
     if (!masters.length) {
       logEvent("sync", "product-sync", `practice ${practiceId}: no master products yet - nothing to copy`, null, false);
       return { message: "No master products yet." };
@@ -1678,7 +1734,7 @@ export function refreshMastersFromBase() {
   });
 }
 
-/* ------------------- one-time metafield import (products CSV) ------------------ */
+/* ------------------------------------ CSV ------------------------------------ */
 
 /** RFC-4180 CSV (quoted fields, "" escapes, newlines inside quotes). */
 export function parseCsv(text) {
@@ -1702,186 +1758,6 @@ export function parseCsv(text) {
   }
   if (f || row.length) { row.push(f); rows.push(row); }
   return rows.filter((r) => r.some((x) => String(x).trim() !== ""));
-}
-
-const normTitle = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
-// Shopify's export puts one list value per line
-const EXPORT_LIST_SPLIT = /\r?\n/;
-
-/** "Name (product.metafields.ns.key)" -> { label, namespace, key } */
-function metafieldColumn(header) {
-  const m = /^(.*)\(product\.metafields\.([^.)]+)\.([^)]+)\)\s*$/.exec(String(header || ""));
-  return m ? { label: m[1].trim(), namespace: m[2], key: m[3] } : null;
-}
-
-/* A metaobject handle (export format) -> "handle (gid)" master cell, or "". */
-async function metaobjectCell(handle) {
-  const defs = await gql(`#graphql
-    query RxMoTypes { metaobjectDefinitions(first: 50) { nodes { type } } }`);
-  for (const { type } of defs.metaobjectDefinitions?.nodes || []) {
-    const d = await gql(
-      `#graphql
-      query RxMoByHandle($h: MetaobjectHandleInput!) { metaobjectByHandle(handle: $h) { id } }`,
-      { h: { type, handle } },
-    );
-    if (d.metaobjectByHandle?.id) return `${handle} (${d.metaobjectByHandle.id})`;
-  }
-  return "";
-}
-
-/**
- * One-time import of product metafields from a Shopify "Export products" CSV
- * (Settings page). For each product in the file (matched to a master by
- * title): its custom.* metafield values go into the master row, are written
- * to the base product straight away, and reach every practice copy on the
- * next product sync. Missing definitions are created first. `dryRun` only
- * reports. Columns with no data, Shopify's own standard (shopify.*)
- * metafields and references whose target doesn't exist in this store are
- * skipped and listed.
- */
-export async function importMetafieldsCsv(text, { dryRun = true } = {}) {
-  await connectDb();
-  const rows = parseCsv(text);
-  if (rows.length < 2) throw new Error("The file has no product rows.");
-  const head = rows[0];
-  const col = (name) => head.indexOf(name);
-  if (col("Title") < 0 || col("Handle") < 0) {
-    throw new Error("This is not a Shopify products export - the Handle / Title columns are missing.");
-  }
-
-  const known = new Map([...METAFIELD_COLUMNS, ...METAFIELD_REF_COLUMNS].map((d) => [d.key, d]));
-  const mfCols = head.map((h, i) => ({ i, ...metafieldColumn(h) })).filter((c) => c.key);
-  const out = {
-    dryRun, products: 0, matched: [], unmatched: [], skippedColumns: [], extraKeys: [],
-    referencesNotFound: [], definitions: null, updatedMasters: 0, baseErrors: [],
-  };
-
-  // one entry per handle - image rows repeat the handle with blank fields
-  const byHandle = new Map();
-  for (const r of rows.slice(1)) {
-    const h = String(r[col("Handle")] || "").trim();
-    if (!h) continue;
-    const cur = byHandle.get(h) || { handle: h, title: "", values: {} };
-    if (!cur.title) cur.title = String(r[col("Title")] || "").trim();
-    for (const c of mfCols) {
-      const v = String(r[c.i] ?? "").trim();
-      const id = c.key + "|" + c.namespace;
-      if (v && !cur.values[id]) cur.values[id] = v;
-    }
-    byHandle.set(h, cur);
-  }
-  out.products = byHandle.size;
-
-  // which columns carry data at all
-  const used = new Set();
-  for (const p of byHandle.values()) for (const k of Object.keys(p.values)) used.add(k);
-  for (const c of mfCols) {
-    const id = c.key + "|" + c.namespace;
-    if (!used.has(id)) out.skippedColumns.push(`${c.namespace}.${c.key} (no data)`);
-    else if (c.namespace !== "custom") out.skippedColumns.push(`${c.namespace}.${c.key} (Shopify standard metafield - not imported)`);
-    else if (!known.has(c.key)) out.extraKeys.push(c.key);
-  }
-
-  // a type for keys the app doesn't know, from their values
-  const extraType = {};
-  for (const key of out.extraKeys) {
-    const vals = [...byHandle.values()].map((p) => p.values[key + "|custom"]).filter(Boolean);
-    extraType[key] = vals.every((v) => /^\d+(\.\d+)?\s+[A-Z]{3}$/.test(v)) ? "money"
-      : vals.some((v) => /\n/.test(v)) ? "multi_line_text_field" : "single_line_text_field";
-  }
-
-  const masters = await MasterProduct.find({}).lean();
-  const byTitle = new Map(masters.map((m) => [normTitle(m.row?.[P.TITLE]), m]));
-  const moCache = {};
-  const changes = new Map(); // master _id -> { master, row }
-
-  for (const p of byHandle.values()) {
-    const master = byTitle.get(normTitle(p.title));
-    if (!master) { out.unmatched.push(`${p.title} (${p.handle})`); continue; }
-    const entry = changes.get(String(master._id)) || { master, row: { ...master.row } };
-    let fields = 0;
-    const extra = [];
-    for (const [id, raw] of Object.entries(p.values)) {
-      const [key, ns] = id.split("|");
-      if (ns !== "custom") continue;
-      const def = known.get(key);
-      if (!def) {
-        const type = extraType[key];
-        extra.push({ namespace: "custom", key, type, value: type === "money" ? formatMetafieldValue("money", raw) : raw });
-        continue;
-      }
-      let cell = raw;
-      if (def.type === "money") cell = raw.replace(/[^0-9.]/g, "");
-      else if (def.source === "gid") {
-        if (!(raw in moCache)) moCache[raw] = raw.startsWith("gid://") ? raw : await metaobjectCell(raw);
-        cell = moCache[raw];
-        if (!cell) { out.referencesNotFound.push(`${p.title}: ${key} = ${raw}`); continue; }
-      } else if (def.source === "url") {
-        cell = raw.split(EXPORT_LIST_SPLIT).map((x) => x.trim()).filter(Boolean).join(", ");
-      } else if (def.type.startsWith("list.")) {
-        cell = raw.split(EXPORT_LIST_SPLIT).map((x) => x.trim()).filter(Boolean).join(" | ");
-      }
-      entry.row[def.column] = cell;
-      fields++;
-    }
-    if (extra.length) {
-      let list = [];
-      try { list = JSON.parse(entry.row[P.METAFIELDS] || "[]"); } catch { list = []; }
-      for (const e of extra) list = [...list.filter((x) => !(x.namespace === e.namespace && x.key === e.key)), e];
-      entry.row[P.METAFIELDS] = JSON.stringify(list);
-      fields += extra.length;
-    }
-    changes.set(String(master._id), entry);
-    out.matched.push({ title: p.title, handle: p.handle, master: master.masterKey, fields });
-  }
-
-  if (dryRun) return out;
-
-  // definitions first, so every value below is stored with its type
-  out.definitions = await ensureProductMetafieldDefinitions();
-  for (const key of out.extraKeys) {
-    const res = await gql(
-      `#graphql
-      mutation RxCreateMfDef($def: MetafieldDefinitionInput!) {
-        metafieldDefinitionCreate(definition: $def) { createdDefinition { id } userErrors { message code } }
-      }`,
-      { def: { name: key.replace(/_/g, " "), namespace: "custom", key, type: extraType[key], ownerType: "PRODUCT" } },
-    );
-    const errs = res.metafieldDefinitionCreate?.userErrors || [];
-    if (!errs.length) out.definitions.created.push(key);
-    else if (!errs.some((e) => e.code === "TAKEN")) out.definitions.failed.push(`${key}: ${errs.map((e) => e.message).join("; ")}`);
-  }
-
-  for (const { master, row } of changes.values()) {
-    // the base gets the values now; its fingerprint is kept in step so the
-    // sync doesn't rewrite it (images included) - only the copies follow
-    const sigs = { ...(master.sigs || {}) };
-    // the base as it is in the store now (a saved id can be stale)
-    const base = await baseTarget(master).find().catch(() => null);
-    if (!base) out.baseErrors.push(`${master.masterKey}: no base product (rxbase:${master.masterKey}) in the store - the next product sync creates it`);
-    if (base) {
-      const ok = await writeMetafields(base.productId, row).catch((err) => {
-        out.baseErrors.push(`${master.masterKey}: ${err.message || err}`);
-        return false;
-      });
-      if (!ok && !out.baseErrors.some((e) => e.startsWith(master.masterKey + ":"))) {
-        out.baseErrors.push(`${master.masterKey}: Shopify refused a value - see Sync & logs`);
-      }
-      const tags = baseTarget(master).tags.join(", ");
-      if (ok && sigs.base && sigs.base === signature(master.row, tags)) sigs.base = signature(row, tags);
-    }
-    await MasterProduct.updateOne({ _id: master._id }, { $set: { row, sigs } });
-    out.updatedMasters++;
-  }
-  await kvSet("migration:metafields-csv", JSON.stringify({ at: new Date().toISOString(), products: out.matched.length, masters: out.updatedMasters }));
-  logEvent("sync", "metafields-csv", `metafields imported from CSV ${JSON.stringify({ ...out, matched: out.matched.length })}`);
-  return out;
-}
-
-/** When the one-time CSV import ran ({ at, products, masters }) or null. */
-export async function metafieldsCsvImported() {
-  const v = await kvGet("migration:metafields-csv");
-  try { return v ? JSON.parse(v) : null; } catch { return null; }
 }
 
 /* ------------------- Shopify -> app: edits made on a base product ------------------ */

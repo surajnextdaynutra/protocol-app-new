@@ -1,8 +1,8 @@
 import { connectDb } from "../db.server";
-import { Account, Counter, DemoAccount, SalesRep } from "../models/index.server";
+import { Account, Counter, DemoAccount, Product, SalesRep } from "../models/index.server";
 import { removeAccount, roleFromTags, upsertAccount } from "./accounts.server";
-import { ensurePracticeCopies, practiceCopiesStatus, removePracticeCopiesIfUnused } from "./catalog.server";
-import { clearDemoCache, doctorTagPrefix, idsFromCustomerTags, tagVal } from "./ids.server";
+import { ensurePracticeCopies, practiceCopiesStatus, removePracticeCopiesIfUnused, setPracticeProducts } from "./catalog.server";
+import { DOCTOR_TAG, clearDemoCache, idsFromCustomerTags, tagVal } from "./ids.server";
 import { kvGet, kvSet, logEvent } from "./log.server";
 import { getSettings, isTrue, setSettings } from "./settings.server";
 import {
@@ -35,9 +35,41 @@ export const ROLES = [
   "Demo",
 ];
 
+// Roles whose account starts a NEW practice, and with it that practice's
+// product copies - only these get the "All / Selected products" choice. A
+// clinic or physician joins an existing practice and uses its products.
+export const COPY_CHOICE_ROLES = ["Practice", "Practice + Doctor", "Demo"];
+
+/** The picked master keys from the form (JSON array or array), or null for
+ *  "All products". */
+function pickedProducts(input, role) {
+  if (!COPY_CHOICE_ROLES.includes(role) || input.productMode !== "selected") return null;
+  let keys = input.productKeys;
+  if (typeof keys === "string") {
+    try {
+      keys = JSON.parse(keys || "[]");
+    } catch {
+      keys = [];
+    }
+  }
+  return (Array.isArray(keys) ? keys : []).map((k) => String(k).trim()).filter(Boolean);
+}
+
+/** Saves the pick for the practice in `tags` - before its customer exists,
+ *  since creating it starts the copy run. A practice that already has copies
+ *  keeps its products (returns false). */
+async function savePickedProducts(tags, keys) {
+  const practiceId = tagVal(tags, "practice_id:");
+  if (!keys || !practiceId) return true;
+  if (await Product.exists({ practiceId, masterKey: { $ne: "" } })) return false;
+  await setPracticeProducts(practiceId, keys);
+  return true;
+}
+
 // id prefix per kind (rep ids really are "RAP…"; finance admins carry admin_id:ADM…).
-const PREFIX = { rep: "RAP", practice: "PRA", clinic: "CLN", doctor: "DOC", admin: "ADM" };
-const ID_FIELD = { RAP: "repId", PRA: "practiceId", CLN: "clinicId", DOC: "doctorId" };
+// Providers get PRO…; the ones made before that keep their DOC… ids.
+const PREFIX = { rep: "RAP", practice: "PRA", clinic: "CLN", doctor: "PRO", admin: "ADM" };
+const ID_FIELD = { RAP: "repId", PRA: "practiceId", CLN: "clinicId", PRO: "doctorId" };
 
 /** Highest number already in use for a prefix, across accounts and reps. */
 async function highestExisting(prefix) {
@@ -47,6 +79,13 @@ async function highestExisting(prefix) {
     return tags
       .filter((t) => /^admin_id:ADM\d+$/i.test(t))
       .reduce((max, t) => Math.max(max, Number(t.split(":")[1].trim().slice(3)) || 0), 0);
+  }
+  if (prefix === PREFIX.doctor) {
+    // PRO numbers continue past the old DOC ones, so DOC5 and PRO5 never
+    // name two different providers (a referral link shows a DOC id as PRO)
+    const oldCounter = await Counter.findById("DOC").lean();
+    const ids = await Account.distinct("doctorId", { doctorId: /^(PRO|DOC)\d+$/i });
+    return ids.reduce((max, v) => Math.max(max, Number(String(v).slice(3)) || 0), oldCounter?.seq || 0);
   }
   const field = ID_FIELD[prefix];
   const values = [
@@ -197,7 +236,7 @@ async function buildTags(role, parent, reuse = {}) {
     }
     case "Physician": {
       if (!parent.clinicId) throw new Error("Choose the parent Clinic for this physician.");
-      const tags = [`clinic_id:${parent.clinicId}`, (await doctorTagPrefix()) + (await id("doctor", "doctorId"))];
+      const tags = [`clinic_id:${parent.clinicId}`, DOCTOR_TAG + (await id("doctor", "doctorId"))];
       if (parent.practiceId) tags.push(`practice_id:${parent.practiceId}`);
       return [...tags, "wholesale"];
     }
@@ -205,7 +244,7 @@ async function buildTags(role, parent, reuse = {}) {
       const practiceId = await id("practice", "practiceId");
       const clinicId = await id("clinic", "clinicId");
       const doctorId = await id("doctor", "doctorId");
-      return [`clinic_id:${clinicId}`, (await doctorTagPrefix()) + doctorId, `practice_id:${practiceId}`, "wholesale"];
+      return [`clinic_id:${clinicId}`, DOCTOR_TAG + doctorId, `practice_id:${practiceId}`, "wholesale"];
     }
     case "Master Clinic": {
       const tags = [`clinic_id:${await id("clinic", "clinicId")}`];
@@ -253,7 +292,7 @@ async function ownedIds(customerId, tags, prevRole) {
  * keeping every other tag and the ids it already owns. Returns
  * { customerId, tags, previousRole }.
  */
-async function reprovisionCustomer(existing, { role, parent, firstName, lastName, clinicLocation }) {
+async function reprovisionCustomer(existing, { role, parent, firstName, lastName, clinicLocation }, beforeSave) {
   const customerId = String(existing.id);
   const acct = await Account.findOne({ customerId }).lean();
   const previousRole = acct?.role || roleFromTags(existing.tags) || "customer";
@@ -263,6 +302,7 @@ async function reprovisionCustomer(existing, { role, parent, firstName, lastName
     (t) => !ROLE_ID_TAG.test(t) && !ROLE_FLAG_TAGS.includes(String(t).trim().toLowerCase()),
   );
   const tags = [...kept, ...roleTags];
+  if (beforeSave) await beforeSave(tags);
 
   const result = await updateCustomer(customerId, { firstName, lastName, tags });
   if (!result.startsWith("ok")) throw new Error("Shopify customer update " + result);
@@ -297,7 +337,10 @@ export async function createPortalAccount(input) {
   if (missing.length) return { ok: false, error: "Missing - " + missing.join(", ") };
   if (!ROLES.includes(role)) return { ok: false, error: "Unknown role: " + role };
 
-  if (role === "Demo") return createDemoTrio({ firstName, email });
+  const picked = pickedProducts(input, role);
+  if (picked && !picked.length) return { ok: false, error: "Pick at least one product, or choose All products." };
+
+  if (role === "Demo") return createDemoTrio({ firstName, email, picked });
 
   // The parent's ids come from the stored parent account, never from typing.
   const parent = { practiceId: "", clinicId: "" };
@@ -337,15 +380,24 @@ export async function createPortalAccount(input) {
   let customerId;
   let tags;
   let previousRole = "";
+  let pickSaved = true;
+  const savePick = async (t) => {
+    pickSaved = await savePickedProducts(t, picked);
+  };
   try {
     if (existing) {
       ({ customerId, tags, previousRole } = await reprovisionCustomer(existing, {
         role, parent, firstName, lastName, clinicLocation,
-      }));
+      }, savePick));
     } else {
       tags = await buildTags(role, parent);
       if (clinicLocation) tags.push("clinic_location:" + clinicLocation.replace(/,/g, " "));
+      await savePick(tags);
       customerId = await createTaggedCustomer({ firstName, lastName, email, tags });
+      // A brand-new customer gets its welcome email even when an earlier
+      // (since deleted) account with this address already got one - the
+      // once-per-address rule is for re-adding the SAME customer.
+      await kvSet("welcome_sent:" + email, null);
     }
   } catch (err) {
     return { ok: false, error: String(err.message || err) };
@@ -399,7 +451,10 @@ export async function createPortalAccount(input) {
   logEvent("sync", email, existing ? `account updated (was ${previousRole}, now ${role})` : `account created (${role})`,
     { customerId, tags });
   startPracticeCopies(tags);
-  return { ok: true, customerId, tags, updated: !!existing, previousRole, welcomeAlreadySent: !!before?.welcomeEmailSentAt };
+  return {
+    ok: true, customerId, tags, updated: !!existing, previousRole, welcomeAlreadySent: !!before?.welcomeEmailSentAt,
+    products: picked ? (pickSaved ? picked.length : "kept") : null,
+  };
 }
 
 /**
@@ -407,7 +462,7 @@ export async function createPortalAccount(input) {
  * demos the portal with. One email in, three customers out
  * (name+practice@…, name+clinic@…, and the address itself as the physician).
  */
-async function createDemoTrio({ firstName, email }) {
+async function createDemoTrio({ firstName, email, picked }) {
   const at = email.indexOf("@");
   if (at < 1) return { ok: false, error: "Invalid email" };
   const local = email.slice(0, at);
@@ -420,10 +475,15 @@ async function createDemoTrio({ firstName, email }) {
   const practiceId = await nextId(PREFIX.practice);
   const clinicId = await nextId(PREFIX.clinic);
   const doctorId = await nextId(PREFIX.doctor);
+  try {
+    await savePickedProducts([`practice_id:${practiceId}`], picked);
+  } catch (err) {
+    return { ok: false, error: String(err.message || err) };
+  }
   const trio = [
     { last: "Practice", email: practiceEmail, tags: [`practice_id:${practiceId}`, "wholesale", "rx_demo"] },
     { last: "Clinic", email: clinicEmail, tags: [`clinic_id:${clinicId}`, `practice_id:${practiceId}`, "wholesale", "rx_demo"] },
-    { last: "Physician", email, tags: [`clinic_id:${clinicId}`, (await doctorTagPrefix()) + doctorId, `practice_id:${practiceId}`, "wholesale", "rx_demo"] },
+    { last: "Physician", email, tags: [`clinic_id:${clinicId}`, DOCTOR_TAG + doctorId, `practice_id:${practiceId}`, "wholesale", "rx_demo"] },
   ];
   let physicianCustomerId = "";
   for (let j = 0; j < trio.length; j++) {
@@ -444,7 +504,7 @@ async function createDemoTrio({ firstName, email }) {
   clearDemoCache();
   logEvent("sync", email, "demo trio created", { practiceId, clinicId, doctorId });
   startPracticeCopies(trio[2].tags);
-  return { ok: true, customerId: physicianCustomerId, tags: trio[2].tags, demo: { practiceId, clinicId, doctorId } };
+  return { ok: true, customerId: physicianCustomerId, tags: trio[2].tags, demo: { practiceId, clinicId, doctorId }, products: picked ? picked.length : null };
 }
 
 /* --------------------------- edit / delete ------------------------------ */
@@ -758,7 +818,7 @@ export async function sendWelcomeEmail({ firstName, lastName, email, role, test 
       return "sent";
     }
     await kvSet(dedupeKey, new Date().toISOString());
-    logEvent("email", email, "welcome email sent");
+    // the caller logs the result ("welcome email: sent") - not logged twice
     return "sent";
   } catch (err) {
     return "failed: " + err;

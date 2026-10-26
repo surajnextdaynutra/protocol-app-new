@@ -20,7 +20,7 @@ import {
   TextField,
 } from "@shopify/polaris";
 
-import { ActionResult, useBusy } from "../components/admin";
+import { ActionResult, roleLabel, useBusy } from "../components/admin";
 import { WELCOME_DASHBOARDS, welcomeLinkForRole } from "../components/welcome-link";
 import {
   listMessages,
@@ -177,6 +177,7 @@ function MessageEditor({ m, data, post, busy }) {
   const [templateId, setTemplateId] = useState(m.templateId);
   const [testTo, setTestTo] = useState("");
   const [role, setRole] = useState("Physician");
+  const saving = useBusy((fd) => fd.get("intent") === "save" && fd.get("id") === m.id);
 
   // a save / reset reloads the data - show what is now stored
   useEffect(() => { setSubject(m.subject); setBody(m.body); setTemplateId(m.templateId); }, [m.subject, m.body, m.templateId]);
@@ -189,7 +190,7 @@ function MessageEditor({ m, data, post, busy }) {
   const previewSubject = fillSample(subject, m, extra);
   const previewBody = fillSample(body, m, extra);
   const doc = useMemo(() => htmlDoc(previewBody), [previewBody]);
-  const roleOptions = Object.keys(WELCOME_DASHBOARDS).map((r) => ({ label: r, value: r }));
+  const roleOptions = Object.keys(WELCOME_DASHBOARDS).map((r) => ({ label: roleLabel(r), value: r }));
   const remindersOff = m.settings.some((s) => s.key === "REMINDERS_ENABLED" && String(s.value).toUpperCase() !== "TRUE");
 
   return (
@@ -230,7 +231,7 @@ function MessageEditor({ m, data, post, busy }) {
                 ) : null}
               </FormLayout>
               <InlineStack gap="200">
-                <Button variant="primary" disabled={!dirty || busy} loading={busy}
+                <Button variant="primary" disabled={!dirty || (busy && !saving)} loading={saving}
                   onClick={() => post({ intent: "save", id: m.id, subject, body, templateId })}>
                   Save
                 </Button>

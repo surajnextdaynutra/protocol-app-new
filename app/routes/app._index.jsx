@@ -141,7 +141,7 @@ export default function Overview() {
           <Card padding="0">
             <DataTable
               columnContentTypes={["text", "text", "text", "text", "text", "numeric", "text", "text"]}
-              headings={["Order", "Date", "Customer", "Doctor", "Practice", "Total", "Delivery", "Commission"]}
+              headings={["Order", "Date", "Customer", "Provider", "Practice", "Total", "Delivery", "Commission"]}
               rows={recent.map((o) => [
                 o.name,
                 o.date,

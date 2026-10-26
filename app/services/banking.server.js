@@ -219,7 +219,7 @@ export async function bankingForPayout(role, entityId) {
   let note = "";
   if (role === "Doctor") {
     const acct = await Account.findOne({ doctorId: entityId }, { practiceId: 1 }).lean();
-    if (!acct?.practiceId) return { found: false, owner: `Doctor ${entityId}`, note: "This physician's practice could not be found, so there is no banking record to show." };
+    if (!acct?.practiceId) return { found: false, owner: `Provider ${entityId}`, note: "This physician's practice could not be found, so there is no banking record to show." };
     ownerType = "practice";
     ownerId = acct.practiceId;
     note = `Physician banking is saved on their practice (${ownerId}).`;

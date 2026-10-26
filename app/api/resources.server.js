@@ -481,10 +481,14 @@ const physicians = {
     // not-found is ok:false so the response cache never keeps it (the doctor may be added later)
     if (!/^[A-Za-z]+\d+$/.test(doctor)) return { ok: false, found: false, error: "bad doctor id" };
     await connectDb();
-    const exact = new RegExp(`^${doctor}$`, "i");
+    // PRO12 and DOC12 are the same provider: referral links show a DOC id as
+    // PRO (and the theme turns PRO back into DOC); new providers have PRO ids
+    const m = /^(pro|doc)(\d+)$/i.exec(doctor);
+    const exact = m ? new RegExp(`^(PRO|DOC)${m[2]}$`, "i") : new RegExp(`^${doctor}$`, "i");
     const acct = await Account.findOne({ doctorId: exact, clinicId: { $ne: "" }, practiceId: { $ne: "" } }).lean();
     if (acct) return { ok: true, found: true, d: acct.doctorId, c: acct.clinicId, p: acct.practiceId };
-    for (const c of await searchCustomers(doctorTagQuery(doctor), 10)) {
+    const variants = m ? [`PRO${m[2]}`, `DOC${m[2]}`] : [doctor];
+    for (const c of await searchCustomers(variants.map(doctorTagQuery).join(" OR "), 10)) {
       const ids = idsFromCustomerTags(c.tags);
       if (exact.test(ids.doctorId) && ids.clinicId && ids.practiceId) {
         return { ok: true, found: true, d: ids.doctorId, c: ids.clinicId, p: ids.practiceId };

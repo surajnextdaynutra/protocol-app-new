@@ -5,7 +5,7 @@ import { recordOrderPayoutIfNew, reverseOrderCommission } from "./commission.ser
 import {
   addTag,
   attrIds,
-  doctorTagPrefix,
+  DOCTOR_TAG,
   doctorTagQuery,
   hasTag,
   isAttributable,
@@ -244,12 +244,11 @@ export async function tagRxOrder(o, ids, demo) {
     if (!o?.id) return false;
     const tags = tagList(o.tags);
     const before = tagsFingerprint(tags);
-    const doctorTag = await doctorTagPrefix();
 
     addTag(tags, "rx");
     setIdTag(tags, "rx_id:", ids.rxId);
     setIdTag(tags, "patient_id:", ids.patientId);
-    setIdTag(tags, doctorTag, ids.doctorId);
+    setIdTag(tags, DOCTOR_TAG, ids.doctorId);
     setIdTag(tags, "clinic_id:", ids.clinicId);
     setIdTag(tags, "practice_id:", ids.practiceId);
     if (ids.subscription) addTag(tags, "subscription");
@@ -264,7 +263,7 @@ export async function tagRxOrder(o, ids, demo) {
 
     // Wholesale-page ids get their OWN prefix so the order stays out of the
     // clinical dashboards' plain doctor_id:/clinic_id:/practice_id: totals.
-    setIdTag(tags, "wholesale_" + doctorTag, ids.wsDoctorId);
+    setIdTag(tags, "wholesale_" + DOCTOR_TAG, ids.wsDoctorId);
     setIdTag(tags, "wholesale_clinic_id:", ids.wsClinicId);
     setIdTag(tags, "wholesale_practice_id:", ids.wsPracticeId);
 
@@ -339,7 +338,7 @@ export async function tagRxCustomer(o, ids, demo) {
     } else if (collision) {
       logEvent("customer-tag", customerId, `BLOCKED doctor_id change ${currentDoctorId} -> ${ids.doctorId} - already belongs to another customer (order ${o.id})`);
     } else {
-      setIdTag(tags, await doctorTagPrefix(), ids.doctorId);
+      setIdTag(tags, DOCTOR_TAG, ids.doctorId);
     }
     setIdTag(tags, "patient_id:", ids.patientId);
     setIdTag(tags, "clinic_id:", ids.clinicId);

@@ -90,7 +90,7 @@ export default function Prescriptions() {
                   name="q"
                   value={q}
                   onChange={setQ}
-                  placeholder="Rx ID, patient, email, doctor / practice id, order"
+                  placeholder="Rx ID, patient, email, provider / practice id, order"
                   autoComplete="off"
                 />
               </div>

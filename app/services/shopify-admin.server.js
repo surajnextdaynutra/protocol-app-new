@@ -90,7 +90,19 @@ export async function gql(query, variables = {}, shop) {
     throw new Error(`Read-only mode (RX_READ_ONLY): ${name} was not sent to Shopify.`);
   }
   shop = shop || (await getShop());
-  const { admin } = await unauthenticated.admin(shop);
+  let admin;
+  try {
+    ({ admin } = await unauthenticated.admin(shop));
+  } catch (err) {
+    if (!/Could not find a session/i.test(String(err?.message || err))) throw err;
+    // The store picked earlier has no stored login any more (the app was
+    // uninstalled there since) - pick again on the next call instead of
+    // failing every job until a restart.
+    shopCache = null;
+    throw new Error(
+      `The app has no login for ${shop} - it was uninstalled there or never opened. Set SHOPIFY_SHOP in .env to the store it should work on and open the app once from that store's Shopify admin.`,
+    );
+  }
   const opName = (/\b(?:query|mutation)\s+(\w+)/.exec(query) || [])[1] || "graphql";
   let netTries = 0;
   for (let attempt = 0; ; attempt++) {

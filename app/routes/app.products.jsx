@@ -110,8 +110,8 @@ export const action = async ({ request }) => {
       return {
         ok: true,
         message: n
-          ? `${n} extra copies found (${res.duplicates} duplicates, ${res.legacy} leftover per-doctor copies) - review below.`
-          : `No duplicate copies across ${res.groups} practice/product pairs.` + (res.skipped ? ` ${res.skipped} pair(s) only have per-doctor copies - left as they are.` : ""),
+          ? `${n} extra copies found (${res.duplicates} duplicates, ${res.legacy} leftover per-provider copies) - review below.`
+          : `No duplicate copies across ${res.groups} practice/product pairs.` + (res.skipped ? ` ${res.skipped} pair(s) only have per-provider copies - left as they are.` : ""),
         dupes: n ? res : null,
       };
     }
@@ -135,6 +135,7 @@ function MasterForm({ columns, master, busy, onClose }) {
   const [row, setRow] = useState(() => Object.fromEntries(columns.map((c) => [c, master?.row?.[c] ?? ""])));
   // columns that came in through a CSV import but are not in the standard list
   const extra = Object.keys(master?.row || {}).filter((c) => !columns.includes(c));
+  const saving = useBusy("save");
   return (
     <Card>
       <Form method="post" onSubmit={onClose}>
@@ -159,7 +160,7 @@ function MasterForm({ columns, master, busy, onClose }) {
           ))}
           {master ? <input type="hidden" name="c:Master Key" value={master.masterKey} /> : null}
           <InlineStack gap="300">
-            <Button submit variant="primary" loading={busy}>Save</Button>
+            <Button submit variant="primary" loading={saving} disabled={busy && !saving}>Save</Button>
             <Button onClick={onClose}>Cancel</Button>
           </InlineStack>
         </FormLayout>
@@ -228,7 +229,7 @@ export default function Products() {
             <BlockStack gap="200">
               <p>
                 For each practice the <b>oldest</b> copy of a product is kept; the newer duplicates and any leftover
-                per-doctor copies (from the old one-copy-per-doctor setup) are deleted from Shopify. A practice is never
+                per-provider copies (from the old one-copy-per-provider setup) are deleted from Shopify. A practice is never
                 left without the product.
               </p>
               <DataTable

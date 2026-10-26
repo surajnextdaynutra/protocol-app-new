@@ -104,8 +104,21 @@ export function Pager({ page, pageSize, total }) {
   );
 }
 
-export function useBusy() {
-  return useNavigation().state !== "idle";
+/** Screen name of a stored role. The stored names ("Practice + Doctor", the
+ *  "Doctor" payout role) stay as they are - saved data and the role logic use
+ *  them - but the screens say Provider. */
+export const roleLabel = (role) => String(role ?? "").replace(/\bDoctor\b/g, "Provider");
+
+/** True while the page is submitting or reloading. With `match` - an intent
+ *  name, or a test on the submitted FormData - only while THAT submission
+ *  runs, so a button's spinner shows for its own form, not every form. */
+export function useBusy(match) {
+  const nav = useNavigation();
+  if (nav.state === "idle") return false;
+  if (match === undefined) return true;
+  const fd = nav.formData;
+  if (!fd) return false;
+  return typeof match === "function" ? !!match(fd) : fd.get("intent") === match;
 }
 
 /** page / pageSize / skip from the request URL. */
