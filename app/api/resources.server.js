@@ -1,5 +1,5 @@
 import { loadAbout, publicAbout, saveAbout, uploadAboutImage } from "../services/about.server";
-import { getAccount, orderHistory, updateAccount } from "../services/account.server";
+import { getAccount, markGettingStartedSeen, orderHistory, updateAccount } from "../services/account.server";
 import { loadBanking, saveBanking } from "../services/banking.server";
 import {
   ApiError,
@@ -233,6 +233,11 @@ const account = {
   ping: ping("account"),
   getAccount: practice.getAccount,
   updateAccount: practice.updateAccount,
+  // Getting Started has been shown once - the welcome link opens the dashboard from now on
+  gettingStartedSeen: ({ caller }) => {
+    requireLogin(caller);
+    return markGettingStartedSeen(caller.customerId);
+  },
   orderHistory: ({ p, caller }) => {
     requireLogin(caller);
     return orderHistory(caller.customerId, {

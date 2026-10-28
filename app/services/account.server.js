@@ -1,7 +1,7 @@
 import { connectDb } from "../db.server";
 import { Order } from "../models/index.server";
 import { normalizePhone, validateAddress, validatePersonal } from "./account-validate.server";
-import { gid, gql } from "./shopify-admin.server";
+import { READ_ONLY, gid, gql, metafieldsSet } from "./shopify-admin.server";
 
 /* My Account (was "Account Settings API" + the getAccount / updateAccount
    actions duplicated in the dashboard scripts). Always acts on the logged-in
@@ -125,6 +125,21 @@ export async function getAccount(customerId) {
  * the page actually sent are touched, so a Personal-only save never blanks
  * the address and vice versa.
  */
+/**
+ * The welcome email links to the dashboard's Getting Started page; that opens
+ * only the first time. Stamps customer metafield rx.getting_started_seen,
+ * which the theme reads (snippets/rx-getting-started-once.liquid) so the
+ * same link opens the dashboard from then on - on any device.
+ */
+export async function markGettingStartedSeen(customerId) {
+  if (!customerId) return { ok: false, error: "customerId missing" };
+  if (READ_ONLY) return { ok: true, skipped: "read-only" };
+  const errs = await metafieldsSet([
+    { ownerId: gid.customer(customerId), namespace: "rx", key: "getting_started_seen", type: "boolean", value: "true" },
+  ]);
+  return errs.length ? { ok: false, error: errs[0].message } : { ok: true };
+}
+
 export async function updateAccount(customerId, payload) {
   if (!customerId) return { ok: false, error: "customerId missing" };
   const has = (k) => Object.prototype.hasOwnProperty.call(payload, k);
