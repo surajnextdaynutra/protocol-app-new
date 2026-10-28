@@ -46,6 +46,9 @@ export function normalizePhone(v) {
   else return null;
   if (!/^\+[1-9]\d{7,14}$/.test(full)) return null;
   if (full.startsWith("+1") && full.length !== 12) return null;
+  // US / Canada: the area code and the exchange can't start with 0 or 1
+  // (Shopify refuses e.g. 123-456-7890 with "Phone is invalid").
+  if (full.startsWith("+1") && !/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(full)) return null;
   return full;
 }
 
@@ -53,6 +56,10 @@ export function phoneMessage(v) {
   const raw = String(v || "").trim();
   if (/[^\d\s()+.-]/.test(raw)) return "Phone can only contain digits, spaces, +, -, ( ) and periods.";
   const digits = raw.replace(/\D/g, "");
+  const nanp = raw.startsWith("+1") ? digits.slice(1) : digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+  if ((raw.startsWith("+1") || !raw.startsWith("+")) && nanp.length === 10) {
+    return "Enter a real US/Canada number - the area code and the next 3 digits can't start with 0 or 1 (e.g. 312-555-0199).";
+  }
   if (raw.startsWith("+1") || (!raw.startsWith("+") && digits.length <= 11)) {
     return "Enter a 10-digit US/Canada number (e.g. 312-555-0199), or add the country code for other countries (e.g. +44 20 7946 0958).";
   }
@@ -135,31 +142,65 @@ export function validateAddress(payload) {
 // Same rules in the theme (window.rxBanking, snippets/account-validate.liquid).
 // Payouts go out by ACH, so the bank and the account holder are US addresses.
 
-/** ABA routing number: 9 digits with a valid check digit. */
+const ORG_RE = /^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 .,&'()/#-]*$/u;
+const STREET_RE = /^[A-Za-z0-9#][A-Za-z0-9 #&.,'/-]*$/;
+const STREET_CHARS_MSG = "Use letters, numbers, spaces and # & . , ' - / only.";
+
+/** "aaaa", "1111", "zz z" - one character typed over and over. */
+const looksJunk = (s) => {
+  const t = String(s || "").replace(/[\s.,'#-]/g, "").toLowerCase();
+  return t.length > 0 && /^(.)\1+$/.test(t);
+};
+const letterCount = (s) => (String(s || "").match(/\p{L}/gu) || []).length;
+
+/** ABA routing number: 9 digits, a real Federal Reserve prefix and a valid
+ *  check digit. */
 export function validRouting(v) {
-  if (!/^\d{9}$/.test(v)) return false;
+  if (!/^\d{9}$/.test(v) || looksJunk(v)) return false;
+  // first two digits: Federal Reserve district (00-12), thrift (21-32), electronic (61-72) or traveler's cheque (80)
+  const p = Number(v.slice(0, 2));
+  if (!(p <= 12 || (p >= 21 && p <= 32) || (p >= 61 && p <= 72) || p === 80)) return false;
   const d = v.split("").map(Number);
   return (3 * (d[0] + d[3] + d[6]) + 7 * (d[1] + d[4] + d[7]) + (d[2] + d[5] + d[8])) % 10 === 0;
 }
 
-const ORG_RE = /^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 .,&'()/#-]*$/u;
+function orgNameMessage(name, label, example) {
+  if (name.length < 2) return `${label} must be at least 2 characters.`;
+  if (name.length > 100) return `${label} must be 100 characters or fewer.`;
+  if (!ORG_RE.test(name)) return `${label} can only contain letters, numbers, spaces and . , & ' - ( ) / #`;
+  if (letterCount(name) < 2 || looksJunk(name)) return `Enter the real ${label.toLowerCase()}, e.g. ${example}.`;
+  return "";
+}
 
 function bankAddressErrors(errs, v, prefix, label) {
   const set = (k, msg) => { if (msg && !errs[k]) errs[k] = msg; };
   const a1 = v(`${prefix}_address_1`);
   if (!a1) set(`${prefix}_address_1`, `${label} Address 1 is required.`);
-  else if (a1.length < 3 || !/[A-Za-z0-9]/.test(a1)) set(`${prefix}_address_1`, "Enter a street address, e.g. 345 Adams Street.");
   else if (a1.length > 100) set(`${prefix}_address_1`, `${label} Address 1 must be 100 characters or fewer.`);
-  if (v(`${prefix}_address_2`).length > 100) set(`${prefix}_address_2`, `${label} Address 2 must be 100 characters or fewer.`);
+  else if (!STREET_RE.test(a1)) set(`${prefix}_address_1`, STREET_CHARS_MSG);
+  else if (a1.length < 5 || !/\d/.test(a1) || !/[A-Za-z]{2,}/.test(a1) || looksJunk(a1)) {
+    set(`${prefix}_address_1`, "Enter the building number and street name, e.g. 345 Adams Street (or PO Box 123).");
+  }
+
+  const a2 = v(`${prefix}_address_2`);
+  if (a2) {
+    if (a2.length > 100) set(`${prefix}_address_2`, `${label} Address 2 must be 100 characters or fewer.`);
+    else if (!STREET_RE.test(a2)) set(`${prefix}_address_2`, STREET_CHARS_MSG);
+    else if (!/[A-Za-z#]/.test(a2) || looksJunk(a2)) set(`${prefix}_address_2`, "Add the unit type, e.g. Suite 222, Apt 4B, Unit 3 or #12.");
+  }
+
   const city = v(`${prefix}_city`);
   if (!city) set(`${prefix}_city`, `${label} City is required.`);
   else if (city.length > 60 || !PLACE_RE.test(city)) set(`${prefix}_city`, "City can only contain letters, spaces, hyphens (-), apostrophes (') and periods.");
+  else if (letterCount(city) < 2 || looksJunk(city)) set(`${prefix}_city`, "Enter a real city name, e.g. Chicago.");
+
   const state = v(`${prefix}_state`);
   if (!state) set(`${prefix}_state`, `${label} State is required.`);
   else if (!inList(US_STATES, state)) set(`${prefix}_state`, "Enter a valid US state, e.g. New York or NY.");
+
   const zip = v(`${prefix}_zip_postal`);
   if (!zip) set(`${prefix}_zip_postal`, `${label} ZIP code is required.`);
-  else if (!/^\d{5}(-\d{4})?$/.test(zip)) set(`${prefix}_zip_postal`, "Enter a valid US ZIP code, e.g. 11201 or 11201-1234.");
+  else if (!/^\d{5}(-\d{4})?$/.test(zip) || /^0{5}/.test(zip)) set(`${prefix}_zip_postal`, "Enter a valid US ZIP code, e.g. 11201 or 11201-1234.");
 }
 
 /** Banking form checks keyed by the form's field names (snake_case). */
@@ -170,24 +211,26 @@ export function validateBanking(fields) {
 
   const bank = v("bank_name");
   if (!bank) set("bank_name", "Bank Name is required.");
-  else if (bank.length < 2 || bank.length > 100 || !ORG_RE.test(bank)) set("bank_name", "Enter the bank's name, e.g. Chase Bank (letters, digits, spaces and . , & ' - only).");
+  else set("bank_name", orgNameMessage(bank, "Bank Name", "Chase Bank"));
 
   const routing = v("bank_routing_ach").replace(/[\s-]/g, "");
   if (!routing) set("bank_routing_ach", "Bank Routing (ACH) is required.");
-  else if (!/^\d{9}$/.test(routing)) set("bank_routing_ach", "The routing number must be exactly 9 digits.");
+  else if (!/^\d+$/.test(routing)) set("bank_routing_ach", "The routing number can only contain digits.");
+  else if (routing.length !== 9) set("bank_routing_ach", `The routing number must be exactly 9 digits (it has ${routing.length}).`);
   else if (!validRouting(routing)) set("bank_routing_ach", "This is not a valid ABA routing number - please double-check it with your bank.");
 
   const acct = v("bank_holder_account_number").replace(/[\s-]/g, "");
   if (!acct) set("bank_holder_account_number", "Account Number is required.");
-  else if (!/^\d{4,17}$/.test(acct)) set("bank_holder_account_number", "The account number must be 4 to 17 digits (numbers only).");
+  else if (!/^\d+$/.test(acct)) set("bank_holder_account_number", "The account number can only contain digits.");
+  else if (acct.length < 4 || acct.length > 17) set("bank_holder_account_number", `The account number must be 4 to 17 digits (it has ${acct.length}).`);
+  else if (looksJunk(acct)) set("bank_holder_account_number", "This doesn't look like a real account number - please check it with your bank.");
+  else if (acct === routing) set("bank_holder_account_number", "The account number cannot be the same as the routing number.");
 
   bankAddressErrors(errs, v, "bank", "Bank");
 
   const biz = v("account_holder_business_name");
   if (!biz) set("account_holder_business_name", "Account Holder Business Name is required.");
-  else if (biz.length < 2 || biz.length > 100 || !ORG_RE.test(biz)) {
-    set("account_holder_business_name", "Enter the business name on the account (letters, digits, spaces and . , & ' - only).");
-  }
+  else set("account_holder_business_name", orgNameMessage(biz, "Business Name", "Sunrise Wellness LLC"));
 
   bankAddressErrors(errs, v, "account_holder", "Account Holder");
 

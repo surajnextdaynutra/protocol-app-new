@@ -146,7 +146,8 @@ export async function demoIdSet() {
     if (id) set.add(id.toLowerCase());
   };
   const cfg = await getSettings();
-  String(cfg.DEMO_IDS || "").split(/[,\s]+/).forEach(add);
+  // "PRA9, CLN9, PRO9" or "PRA9/CLN9/PRO9" - any of , ; / or whitespace separates
+  String(cfg.DEMO_IDS || "").split(/[,;/\s]+/).forEach(add);
   try {
     await connectDb();
     const rows = await DemoAccount.find({}).lean();

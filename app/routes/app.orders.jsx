@@ -34,16 +34,25 @@ export const loader = async ({ request }) => {
   const view = url.searchParams.get("view") || "ledger";
 
   const filter = {};
-  if (view === "ledger") filter["commission.logged"] = true;
+  // Every Rx order, not only the logged ones: a wholesale / demo order that
+  // earns nobody anything still belongs in the list (shown as "No commission").
+  if (view === "ledger") filter.$or = [{ "commission.logged": true }, { tags: "rx" }];
   else if (view === "rx") filter.tags = "rx";
   else if (view === "unlogged") Object.assign(filter, { tags: "rx", "commission.logged": { $ne: true } });
   else if (view === "deleted") filter["commission.status"] = "Deleted";
   if (q) {
     const re = rx(q);
-    filter.$or = [
+    const search = [
       { name: re }, { email: re }, { doctorId: re }, { clinicId: re }, { practiceId: re },
+      { wsClinicId: re }, { wsPracticeId: re },
       { rxId: re }, { "commission.repId": re }, { "customer.last": re },
     ];
+    if (filter.$or) {
+      filter.$and = [{ $or: filter.$or }, { $or: search }];
+      delete filter.$or;
+    } else {
+      filter.$or = search;
+    }
   }
   const [rows, total, sums] = await Promise.all([
     Order.find(filter).sort({ orderCreatedAt: -1 }).skip(skip).limit(pageSize).lean(),
@@ -172,10 +181,10 @@ export default function Orders() {
               o.c.logged ? money(o.c.practiceAmt) : "-",
               o.c.logged ? `${money(o.c.repAmt)}${o.c.repId ? ` (${o.c.repId})` : ""}` : "-",
               o.delivery,
-              o.c.logged ? <StatusBadge key={o.id} status={o.c.status} /> : o.financial,
+              o.c.logged ? <StatusBadge key={o.id} status={o.c.status} /> : o.c.status === "Deleted" ? <StatusBadge key={o.id} status="Deleted" /> : "No commission",
               <InlineStack key={o.id + "a"} gap="200" wrap={false}>
                 <Button size="micro" disabled={busy} onClick={() => run("refetch", o.id)}>Refresh</Button>
-                {o.c.logged && o.c.status !== "Deleted" ? (
+                {o.c.status !== "Deleted" ? (
                   <Button size="micro" disabled={busy} onClick={() => run("resync", o.id)}>Recalculate</Button>
                 ) : null}
               </InlineStack>,

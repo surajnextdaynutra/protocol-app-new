@@ -117,6 +117,9 @@ export async function repDashboard({
 
   const cfg = await getSettings();
   const perUnit = await repCommissionPerUnit();
+  // A demo order never pays a rep (same rule as the payout ledger) - it still
+  // counts toward orders / units / sales.
+  const earnOf = (o) => (o.demo ? 0 : o.units * perUnit);
   const cutoff = fromMs > 0 ? fromMs : days > 0 ? Date.now() - days * 86400000 : 0;
   const cutoffTo = toMs > 0 ? toMs : 0;
   const now = new Date();
@@ -265,7 +268,7 @@ export async function repDashboard({
     order: o.name,
     amount: o.amount,
     units: o.units,
-    commission: o.units * perUnit,
+    commission: earnOf(o),
     patient: o.patient,
     email: o.email,
     patientId: o.patientId || "",
@@ -282,7 +285,7 @@ export async function repDashboard({
     const docId = o.doctor;
     if (!docInfo[docId]) continue; // only this rep's (filtered) doctors
     const clinId = o.clinic || clinicOf[docId] || "";
-    const orderCommission = o.units * perUnit;
+    const orderCommission = earnOf(o);
     commissionAllTime += orderCommission;
     if (inOpenMonth(o.ts)) commissionOpen += orderCommission;
     out.totals.orders++;
@@ -367,7 +370,7 @@ export async function repDashboard({
     if (seenOrderNames.has(o.name)) continue;
     seenOrderNames.add(o.name);
     if (!extraMatchesFilters(o) || !passes(o)) continue;
-    const orderCommission = o.units * perUnit;
+    const orderCommission = earnOf(o);
     commissionAllTime += orderCommission;
     if (inOpenMonth(o.ts)) commissionOpen += orderCommission;
     out.totals.orders++;
@@ -494,7 +497,7 @@ export async function repDashboard({
     });
   }
   const wholesaleRow = (pb, o, clinicId, label) => {
-    const earnings = o.units * perUnit;
+    const earnings = earnOf(o);
     pb.orders += 1;
     pb.units += o.units;
     pb.sales += o.amount;

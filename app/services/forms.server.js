@@ -52,31 +52,88 @@ async function sendPlainEmail(toEmail, toName, subject, textBody, replyToEmail) 
 
 /* ------------------------------- contact -------------------------------- */
 
+/** { field: message } for every bad value - the same rules as the contact
+ *  forms in the theme (sections/contact-support-form.liquid and, for the
+ *  Healthcare Professionals page, sections/contact-protocol.liquid). Email is
+ *  always required. The HCP form always sends `practiceName` (even empty), so
+ *  its own fields are required only when that key is present; the other
+ *  forms' fields are checked when sent. */
+export function validateContact(data) {
+  const v = (k) => String(data[k] ?? "").trim();
+  const errs = {};
+  const email = v("email");
+  if (!email) errs.email = "Please enter your email address.";
+  else if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@.]{2,}$/.test(email)) {
+    errs.email = "Please enter a valid email address (e.g. name@domain.com).";
+  }
+  const name = v("name");
+  if (name && (name.length < 2 || name.length > 80 || !/^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u.test(name))) {
+    errs.name = "Please enter a valid name (2-80 letters).";
+  }
+  if ("practiceName" in data) {
+    const practice = v("practiceName");
+    if (!practice) errs.practiceName = "Please enter your practice name.";
+    else if (practice.length < 2 || practice.length > 100 || !/^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 &.,'()/-]*$/u.test(practice) || !/\p{L}/u.test(practice)) {
+      errs.practiceName = "Please enter a valid practice name (2-100 characters).";
+    }
+    const provider = v("providerName");
+    if (!provider) errs.providerName = "Please enter the provider name.";
+    else if (provider.length < 2 || provider.length > 80 || !/^[\p{L}\p{M}][\p{L}\p{M} .,'-]*$/u.test(provider)) {
+      errs.providerName = "Please enter a valid provider name (2-80 letters).";
+    }
+    if (!v("organizationType")) errs.organizationType = "Please select an organization type.";
+    else if (v("organizationType").length > 100) errs.organizationType = "Please select an organization type.";
+    const message = v("message");
+    if (!message) errs.message = "Please enter your message.";
+    else if (message.length < 10) errs.message = "Please enter at least 10 characters.";
+  }
+  const phone = v("phone");
+  if (phone) {
+    const digits = phone.replace(/\D/g, "").length;
+    if (!/^\+?[0-9\s().-]+$/.test(phone) || digits < 7 || digits > 15) {
+      errs.phone = "Please enter a valid phone number (7 to 15 digits).";
+    }
+  }
+  for (const [k, val] of Object.entries(data)) {
+    if (k === "pageUrl" || errs[k]) continue;
+    if (String(val ?? "").length > 2000) errs[k] = "Must be 2000 characters or fewer.";
+  }
+  return errs;
+}
+
 export async function saveContact(fieldsArr, { customerId = "", to } = {}) {
   await connectDb();
   const data = fieldsToObject(fieldsArr);
+  const fieldErrors = validateContact(data);
+  if (Object.keys(fieldErrors).length) {
+    return { error: "Please fix the highlighted fields.", fieldErrors };
+  }
   const cfg = await getSettings();
-  await FormEntry.create({
+  const entry = await FormEntry.create({
     form: "contact",
     data,
     customerId,
     email: String(data.email || "").toLowerCase(),
   });
 
-  const who = data.name || data.email || "Website visitor";
+  const who = data.name || data.providerName || data.practiceName || data.email || "Website visitor";
   const lines = [
     "New contact form submission from the Protocol Therapeutics website.",
     "",
-    "Name: " + (data.name || "-"),
+    "Name: " + (data.name || data.providerName || "-"),
+  ];
+  if (data.practiceName) lines.push("Practice: " + data.practiceName);
+  if (data.organizationType) lines.push("Organization type: " + data.organizationType);
+  lines.push(
     "Email: " + (data.email || "-"),
     "Phone: " + (data.phone || "-"),
     "",
     "Comment:",
     data.message || "-",
-  ];
+  );
   if (data.source) lines.push("", "Source: " + data.source);
   if (data.pageUrl) lines.push("", "Submitted from: " + data.pageUrl);
-  const replyTo = data.email && String(data.email).includes("@") ? String(data.email) : "";
+  const replyTo = String(data.email || "").trim();
   const sent = await sendPlainEmail(
     to || cfg.CONTACT_EMAIL,
     "Protocol Therapeutics Support",
@@ -84,6 +141,8 @@ export async function saveContact(fieldsArr, { customerId = "", to } = {}) {
     lines.join("\n"),
     replyTo,
   );
+  // shown on the app's Form entries page: did the team get the email?
+  await FormEntry.updateOne({ _id: entry._id }, { $set: { status: sent ? "Emailed" : "Not emailed" } });
   return { success: true, created: true, delivery: sent ? "brevo" : "saved" };
 }
 
@@ -158,9 +217,46 @@ function referralSummary(data) {
   return lines.join("\n") + otherFieldsBlock(data);
 }
 
+/** { field: message } for every bad value - the same rules as the Add New
+ *  Client form on the rep dashboard (sections/rx-rep-dashboard.liquid). */
+export function validateReferral(data) {
+  const v = (k) => String(data[k] ?? "").trim();
+  const errs = {};
+  const text = (k, min, max, re, msg) => {
+    const s = v(k);
+    if (!s) errs[k] = "This field is required.";
+    else if (s.length < min) errs[k] = `Must be at least ${min} character${min > 1 ? "s" : ""}.`;
+    else if (s.length > max) errs[k] = `Must be ${max} characters or fewer.`;
+    else if (!re.test(s)) errs[k] = msg;
+    else if (!/\p{L}/u.test(s)) errs[k] = "Must include at least one letter.";
+  };
+  text("practiceName", 2, 100, /^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 &.,'()/-]*$/u, "Use letters, numbers, spaces and & . , ' - ( ) / only.");
+  text("clinicLocation", 2, 100, /^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 #&.,'()/-]*$/u, "Use letters, numbers, spaces and # & . , ' - ( ) / only.");
+  text("contactFirstName", 1, 50, /^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u, "Use letters, spaces and . ' - only.");
+  text("contactLastName", 1, 50, /^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u, "Use letters, spaces and . ' - only.");
+  const email = v("contactEmail");
+  if (!email) errs.contactEmail = "This field is required.";
+  else if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@.]{2,}$/.test(email)) {
+    errs.contactEmail = "Enter a valid email address (e.g. name@clinic.com).";
+  }
+  const phys = v("numPhysicians");
+  if (!phys) errs.numPhysicians = "This field is required.";
+  else if (!/^\d+$/.test(phys) || Number(phys) < 1 || Number(phys) > 9999) {
+    errs.numPhysicians = "Enter a number from 1 to 9999.";
+  }
+  if (!v("state")) errs.state = "Please select an option.";
+  else if (v("state").length > 50) errs.state = "Select a state.";
+  if (v("notes").length > 2000) errs.notes = "Notes must be 2000 characters or fewer.";
+  return errs;
+}
+
 export async function saveReferral(fieldsArr, repName, repEmail, { customerId = "" } = {}) {
   await connectDb();
   const data = fieldsToObject(fieldsArr);
+  const fieldErrors = validateReferral(data);
+  if (Object.keys(fieldErrors).length) {
+    return { error: "Please fix the highlighted fields.", fieldErrors };
+  }
   data.repName = repName || "";
   data.repEmail = repEmail || "";
   const cfg = await getSettings();
