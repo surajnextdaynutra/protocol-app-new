@@ -259,7 +259,7 @@ export function itemsHaveRealPlan(itemsText) {
   return String(itemsText || "")
     .split(";")
     .some((seg) => {
-      seg = seg.replace(/\s*[-–—]\s*Physician Note:.*$/i, "").trim();
+      seg = seg.replace(/\s*[-–—]\s*(?:Physician|Provider) Note:.*$/i, "").trim();
       const m = seg.match(/\(([^()]*)\)\s*$/);
       return !!m && !/^\s*one[\s-]?time\s*$/i.test(m[1]);
     });

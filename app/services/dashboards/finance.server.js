@@ -23,6 +23,12 @@ import { invalidateResponses } from "../response-cache.server";
    summary; the only writes flip a payout row's Status / Date Paid /
    Transaction # - never its amount. Demo accounts are left out everywhere. */
 
+/* A practice / clinic / provider buying stock for itself on the wholesale
+   order page - not patient business, so Finance leaves it out of its orders,
+   counts and totals. Only the rep's per-unit commission on it still counts. */
+const isWholesaleOrder = (o) =>
+  !!(o.wholesaleRole || o.wsDoctorId || o.wsClinicId || o.wsPracticeId);
+
 const titleCase = (s) =>
   String(s || "unfulfilled")
     .replace(/_/g, " ")
@@ -135,6 +141,14 @@ export async function financeDashboard(p) {
   }
   const repName = (id) => (id ? repInfo[id]?.name || id : "");
 
+  // A deleted user's account is removed, but their orders, payouts and
+  // banking stay in the database. Finance only lists ids that a current
+  // account (or sales rep record) still carries, so deleted users drop out.
+  const liveIds = new Set(Object.keys(repInfo));
+  for (const c of roster) [c.doctorId, c.clinicId, c.practiceId].forEach((id) => id && liveIds.add(id));
+  const isGone = (id) => !!id && !liveIds.has(id);
+  const hiddenOrders = new Set();
+
   // Fallback names for practices / clinics with no account of their own: the
   // company (then the personal name) of any account tagged with that id.
   const practiceNameByPid = {};
@@ -174,7 +188,7 @@ export async function financeDashboard(p) {
 
   const logged = await Order.find(
     { "commission.logged": true, "commission.status": { $ne: "Deleted" }, demo: { $ne: true } },
-    { name: 1, orderCreatedAt: 1, commission: 1, deliveryStatus: 1, total: 1 },
+    { name: 1, orderCreatedAt: 1, commission: 1, deliveryStatus: 1, total: 1, wholesaleRole: 1, wsDoctorId: 1, wsClinicId: 1, wsPracticeId: 1 },
   ).lean();
   const ledger = logged.filter(
     (o) => !isDemoId(o.commission.doctorId, o.commission.clinicId, o.commission.practiceId),
@@ -207,9 +221,19 @@ export async function financeDashboard(p) {
     if ((cutoff && ts < cutoff) || (cutoffTo && ts > cutoffTo)) continue;
     const c = o.commission;
     const { doctorId, clinicId, practiceId } = c;
+    const owners = [doctorId, clinicId, practiceId].filter(Boolean);
+    if (owners.length && owners.every(isGone)) {
+      hiddenOrders.add(o.name);
+      continue;
+    }
     if (fPractice && practiceId !== fPractice) continue;
     if (fClinic && clinicId !== fClinic) continue;
     if (fDoctor && doctorId !== fDoctor) continue;
+    if (isWholesaleOrder(o)) {
+      hiddenOrders.add(o.name);
+      if (c.repId && !isGone(c.repId)) ensureRep(c.repId).earned += c.repAmt;
+      continue;
+    }
     const lineTotal = c.doctorAmt + c.clinicAmt + c.practiceAmt;
 
     totals.ordersAllTime++;
@@ -221,7 +245,7 @@ export async function financeDashboard(p) {
       totals.revenueLastMonth += lineTotal;
     }
 
-    if (doctorId) {
+    if (doctorId && !isGone(doctorId)) {
       const d = ensureDoc(doctorId);
       d.orders++;
       d.revenue += lineTotal;
@@ -229,14 +253,14 @@ export async function financeDashboard(p) {
       if (!d.clinicId && clinicId) d.clinicId = clinicId;
       if (!d.practiceId && practiceId) d.practiceId = practiceId;
     }
-    if (clinicId) {
+    if (clinicId && !isGone(clinicId)) {
       const cl = ensureClinic(clinicId);
       cl.orders++;
       cl.revenue += lineTotal;
       cl.earned += c.clinicAmt;
       if (doctorId) cl.doctorSet[doctorId] = true;
     }
-    if (practiceId) {
+    if (practiceId && !isGone(practiceId)) {
       const pr = ensurePrac(practiceId);
       pr.orders++;
       pr.revenue += lineTotal;
@@ -255,7 +279,7 @@ export async function financeDashboard(p) {
       row.revenue += lineTotal;
       row.earned += c.doctorAmt;
     }
-    if (c.repId) {
+    if (c.repId && !isGone(c.repId)) {
       const rp = ensureRep(c.repId);
       rp.orders++;
       rp.revenue += lineTotal;
@@ -303,7 +327,7 @@ export async function financeDashboard(p) {
     const id = String(r.entityId || "").trim();
     const amount = Number(r.amount) || 0;
     if (!id || !amount) continue;
-    if (isDemoId(id)) continue;
+    if (isDemoId(id) || isGone(id)) continue;
     if (role === "Doctor" && fDoctor && id !== fDoctor) continue;
     if (role === "Clinic" && fClinic && id !== fClinic) continue;
     if (role === "Practice" && fPractice && id !== fPractice) continue;
@@ -347,7 +371,7 @@ export async function financeDashboard(p) {
   /* ---- banking ---- */
   const bankByType = { practice: {}, clinic: {}, rep: {}, physician: {} };
   for (const b of await Banking.find({}).lean()) {
-    if (isDemoId(b.ownerId)) continue;
+    if (isDemoId(b.ownerId) || isGone(b.ownerId)) continue;
     let fields = {};
     try {
       fields = decryptJson(b.data) || {};
@@ -367,6 +391,7 @@ export async function financeDashboard(p) {
   ]);
   for (const pid of [...practiceIds].sort()) {
     if (fPractice && pid !== fPractice) continue;
+    if (isGone(pid)) continue;
     const m = bankByType.practice[pid];
     const base = { entityType: "Practice", role: "Practice", practiceId: pid, name: practiceName(pid), practiceName: practiceName(pid) };
     banking.push(m ? { ...base, found: true, updatedAt: m.updatedAt, source: "app", ...bankFieldsToRow(m.fields) } : { ...base, found: false });
@@ -525,7 +550,7 @@ export async function financeDashboard(p) {
   const reps = Object.values(byRep)
     .map((rp) => {
       const repPractices = (assignedByRep[rp.id] || [])
-        .filter((x) => !/^CLN/i.test(String(x)))
+        .filter((x) => !/^CLN/i.test(String(x)) && !isGone(x))
         .map((pid) => {
           const pr = byPrac[pid];
           const doctorCount = pr ? Object.keys(pr.doctorSet).length : 0;
@@ -564,13 +589,16 @@ export async function financeDashboard(p) {
       if (cutoff) q.orderCreatedAt.$gte = new Date(cutoff);
       if (cutoffTo) q.orderCreatedAt.$lte = new Date(cutoffTo);
     }
-    const all = await Order.find(q, { name: 1, orderCreatedAt: 1, total: 1, fulfillmentStatus: 1 })
+    const all = await Order.find(q, { name: 1, orderCreatedAt: 1, total: 1, fulfillmentStatus: 1, wholesaleRole: 1, wsDoctorId: 1, wsClinicId: 1, wsPracticeId: 1 })
       .sort({ orderCreatedAt: -1 })
       .limit(5000)
       .lean();
     let revenue = 0;
+    let count = 0;
     const inWindow = new Set(orders.map((o) => o.order));
     for (const o of all) {
+      if (hiddenOrders.has(o.name) || isWholesaleOrder(o)) continue; // a deleted user's / wholesale order
+      count++;
       revenue += o.total || 0;
       if (inWindow.has(o.name) || ledgerNames.has(o.name)) continue;
       orders.push({
@@ -583,8 +611,8 @@ export async function financeDashboard(p) {
         notInLedger: true,
       });
     }
-    totalsOut.ordersAllTime = all.length;
-    totalsOut.shopifyOrdersCount = all.length;
+    totalsOut.ordersAllTime = count;
+    totalsOut.shopifyOrdersCount = count;
     totalsOut.shopifyOrdersRevenue = revenue;
   }
   orders.sort((a, b) => b.ts - a.ts);

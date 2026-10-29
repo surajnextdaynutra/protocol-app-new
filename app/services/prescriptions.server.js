@@ -385,7 +385,7 @@ export async function sendRx(d) {
       try {
         await sendEmail({
           to,
-          subject: String(cfg.CONFIRMED_SUBJECT || "Your prescription order link"),
+          subject: String(cfg.CONFIRMED_SUBJECT || "Your protocol order link"),
           htmlBody: fillTemplate(cfg.CONFIRMED_BODY, values),
           params: {
             NAME: patientName,
@@ -478,7 +478,7 @@ async function sendReminder(cfg, type, rx) {
     };
     await sendEmail({
       to: rx.email,
-      subject: String(cfg[type + "_SUBJECT"] || "Your prescription"),
+      subject: String(cfg[type + "_SUBJECT"] || "Your protocol"),
       htmlBody: fillTemplate(cfg[type + "_BODY"], values),
       params: {
         NAME: name,

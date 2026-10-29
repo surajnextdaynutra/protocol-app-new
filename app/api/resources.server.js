@@ -84,7 +84,7 @@ function prescriberScope(caller, p) {
   if (clinic && !isOwnId(caller, "clinic", clinic)) throw new ApiError("You do not have access to this clinic.", 403);
   if (practice && !isOwnId(caller, "practice", practice)) throw new ApiError("You do not have access to this practice.", 403);
   if (!caller.isWholesale && !caller.isRep && !caller.isFinance) {
-    throw new ApiError("This account cannot write prescriptions.", 403);
+    throw new ApiError("This account cannot write protocols.", 403);
   }
   return { doctor, clinic, practice };
 }

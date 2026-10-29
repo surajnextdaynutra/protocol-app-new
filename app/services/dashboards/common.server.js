@@ -76,7 +76,7 @@ export function parseItems(s) {
   for (let seg of String(s || "").split(";")) {
     seg = seg.trim();
     if (!seg) continue;
-    seg = seg.replace(/\s*[-–—]\s*Physician Note:.*$/i, "").trim();
+    seg = seg.replace(/\s*[-–—]\s*(?:Physician|Provider) Note:.*$/i, "").trim();
 
     let plan = "";
     const pm = seg.match(/\(([^()]*)\)\s*$/);

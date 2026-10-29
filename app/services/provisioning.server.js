@@ -465,6 +465,8 @@ export async function createPortalAccount(input) {
 async function createDemoTrio({ firstName, email, picked }) {
   const at = email.indexOf("@");
   if (at < 1) return { ok: false, error: "Invalid email" };
+  firstName = String(firstName || "").trim();
+  firstName = firstName.charAt(0).toUpperCase() + firstName.slice(1); // "demo" -> "Demo Clinic"
   const local = email.slice(0, at);
   const domain = email.slice(at);
   const practiceEmail = `${local}+practice${domain}`;
@@ -483,14 +485,14 @@ async function createDemoTrio({ firstName, email, picked }) {
   const trio = [
     { last: "Practice", email: practiceEmail, tags: [`practice_id:${practiceId}`, "wholesale", "rx_demo"] },
     { last: "Clinic", email: clinicEmail, tags: [`clinic_id:${clinicId}`, `practice_id:${practiceId}`, "wholesale", "rx_demo"] },
-    { last: "Physician", email, tags: [`clinic_id:${clinicId}`, DOCTOR_TAG + doctorId, `practice_id:${practiceId}`, "wholesale", "rx_demo"] },
+    { last: "Provider", email, tags: [`clinic_id:${clinicId}`, DOCTOR_TAG + doctorId, `practice_id:${practiceId}`, "wholesale", "rx_demo"] },
   ];
   let physicianCustomerId = "";
   for (let j = 0; j < trio.length; j++) {
     try {
       const id = await createTaggedCustomer({ firstName, lastName: trio[j].last, email: trio[j].email, tags: trio[j].tags });
       await Account.updateOne({ customerId: id }, { $set: { role: "Demo", demo: true } });
-      if (trio[j].last === "Physician") physicianCustomerId = id;
+      if (j === 2) physicianCustomerId = id; // the provider account
     } catch (err) {
       return {
         ok: false,
@@ -785,7 +787,8 @@ export async function sendWelcomeEmail({ firstName, lastName, email, role, test 
     lastname: lastName || "",
     name: fullName || String(firstName || "there"),
     email,
-    role: role || "",
+    // shown to the account holder: "Provider", never "Physician" / "Doctor"
+    role: String(role || "").replace(/\b(Physician|Doctor)\b/g, "Provider"),
     link: welcomeLinkForRole(cfg.WELCOME_EMAIL_LINK, role),
   };
   const fill = (s) =>

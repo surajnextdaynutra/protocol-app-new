@@ -224,7 +224,7 @@ export async function physicianDashboard({
   // Payment History - solo physician only; a doctor inside a larger practice
   // is paid by the practice.
   if (doctor && isSolo) {
-    out.payouts = await doctorPayouts(doctor);
+    out.payouts = await doctorPayouts(doctor, practice);
     out.payoutPaid = out.payouts.reduce((s, p) => s + (p.paid || 0), 0);
     out.payoutPending = out.payouts.reduce((s, p) => s + (p.due || 0), 0);
   }
@@ -240,11 +240,25 @@ export async function physicianDashboard({
  * of that month's logged orders (Doctor + Clinic + Practice amounts - for a
  * solo doctor all of it sits in the Doctor amount); status / date paid /
  * transaction # come from the finance admin's payout rows.
+ *
+ * A solo doctor's money is filed under their PRACTICE id whenever an order
+ * carries a clinic / practice share (commission.server applySplitToPayouts),
+ * so the Practice rows are read too - otherwise Mark paid on the Finance
+ * Payouts page never shows here.
  */
-export async function doctorPayouts(doctorId) {
+export async function doctorPayouts(doctorId, practiceId = "") {
   await connectDb();
   const cfg = await getSettings();
-  const history = await payoutHistory("Doctor", doctorId); // one line per payout record
+  const own = await payoutHistory("Doctor", doctorId); // one line per payout record
+  const prac = practiceId ? await payoutHistory("Practice", practiceId) : [];
+  const realKeys = new Set([...own, ...prac].filter((h) => !h.placeholder).map((h) => h.key));
+  const seenPlaceholder = new Set();
+  const history = [...own, ...prac].filter((h) => {
+    if (!h.placeholder) return true;
+    if (realKeys.has(h.key) || seenPlaceholder.has(h.key)) return false;
+    seenPlaceholder.add(h.key);
+    return true;
+  });
 
   const orders = await Order.find(
     { "commission.logged": true, "commission.doctorId": doctorId },
@@ -337,12 +351,12 @@ export async function sendCheckoutLink(rxId, doctor, clinic) {
   if (!rxId) return { ok: false, error: "missing rxId" };
   await connectDb();
   const r = await Prescription.findOne({ rxId }).lean();
-  if (!r) return { ok: false, error: "prescription not found" };
+  if (!r) return { ok: false, error: "protocol not found" };
   if (clinic && String(r.clinicId).trim() !== clinic) {
-    return { ok: false, error: "not authorized for this prescription" };
+    return { ok: false, error: "not authorized for this protocol" };
   }
   if (doctor && String(r.doctorId).trim() !== doctor) {
-    return { ok: false, error: "not authorized for this prescription" };
+    return { ok: false, error: "not authorized for this protocol" };
   }
   const email = String(r.email || "").trim();
   const link = String(r.link || "").trim();
@@ -360,7 +374,7 @@ export async function sendCheckoutLink(rxId, doctor, clinic) {
   try {
     await sendEmail({
       to: email,
-      subject: String(cfg.CONFIRMED_SUBJECT || "Your prescription order link"),
+      subject: String(cfg.CONFIRMED_SUBJECT || "Your protocol order link"),
       htmlBody: fillTemplate(cfg.CONFIRMED_BODY, values),
       params: { NAME: patientName, LINK: link, VALIDITY: values.validity, DOCTOR_NAME: doctorName },
       templateId: cfg.CONFIRMED_TEMPLATE_ID,
