@@ -45,7 +45,7 @@ export const SETTINGS_DEFAULTS = [
   ["ORDER_PAID_BODY", M.ORDER_PAID_BODY_DEFAULT, "Placeholders: [name] [order-number].", "sms"],
   ["ORDER_PAID_SMS_START_AT", "", "Optional ISO date/time. Orders created before this never get the order-paid SMS. Blank = captured automatically the first time the feature runs.", "sms"],
   // --- order confirmation email (the app's own, alongside / instead of Shopify's)
-  ["ORDER_CONFIRM_EMAIL_ENABLED", "TRUE", "TRUE/FALSE - the app's order confirmation email to the customer of every paid order (same go-live cutoff as the order-paid SMS).", "email"],
+  ["ORDER_CONFIRM_EMAIL_ENABLED", "FALSE","TRUE/FALSE - the app's order confirmation email to the customer of every paid order (same go-live cutoff as the order-paid SMS).", "email"],
   ["ORDER_CONFIRM_SUBJECT", M.ORDER_CONFIRM_SUBJECT_DEFAULT, "Placeholders: [name] [order-number].", "email"],
   ["ORDER_CONFIRM_BODY", M.ORDER_CONFIRM_BODY_DEFAULT, "HTML. Placeholders: [name] [order-number] [order_date] [items] [subtotal] [discount_row] [shipping] [tax] [total] [shipping_address] [order_status_link].", "email"],
   ["ORDER_FULFILLED_SMS_ENABLED", "FALSE", "TRUE/FALSE - one-time SMS when an order is fulfilled and has a tracking link. Off by default: the old Google script never actually sent this one.", "sms"],

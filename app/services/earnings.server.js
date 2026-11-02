@@ -12,7 +12,14 @@ import { legacyId } from "./shopify-admin.server";
    its own $ per unit on a product instead - an EarningOverride. The
    commission split, and the earnings a clinic / physician sees on their own
    Product Pricing page, use the override when there is one and the default
-   otherwise. */
+   otherwise.
+
+   OFF since the practice dashboard's per clinic / physician panel was
+   removed (2026-10-29): the practice only sets the product defaults, so a
+   leftover override would silently change earnings - on the clinic /
+   physician Product Pricing pages and in the order commission split - that
+   nobody can see or edit any more. The saved rows are kept but ignored. */
+const OVERRIDES_ACTIVE = false;
 
 /** Stable key for one practice product: its master key (the same across a
  *  re-created copy), else its product id. */
@@ -26,6 +33,7 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
  */
 export async function overridesFor(practiceId, { doctorId = "", clinicId = "" }, keys) {
   const out = {};
+  if (!OVERRIDES_ACTIVE) return out;
   keys = [...new Set((keys || []).filter(Boolean))];
   if (!practiceId || !keys.length || (!doctorId && !clinicId)) return out;
   await connectDb();
@@ -52,7 +60,7 @@ export async function applyViewerEarnings(list, viewer) {
     p.clinicDefault = p.clinicCommission;
   }
   const practiceId = list.find((p) => p._practiceId)?._practiceId || "";
-  if (!practiceId || !list.length) return list;
+  if (!OVERRIDES_ACTIVE || !practiceId || !list.length) return list;
   await connectDb();
   const keys = list.map((p) => p._key);
 

@@ -3,16 +3,16 @@
    email page's preview, so the page shows exactly the link that is sent. */
 
 export const WELCOME_DASHBOARDS = {
-  Practice: "/pages/rx-practice-dashboard#getting-started",
-  "Practice + Doctor": "/pages/rx-physician-dashboard#getting-started",
-  "Master Clinic": "/pages/rx-clinic-dashboard#getting-started",
-  Clinic: "/pages/rx-clinic-dashboard#getting-started",
-  "Clinic + Doctor": "/pages/rx-clinic-dashboard#getting-started",
-  Physician: "/pages/rx-physician-dashboard#getting-started",
-  "Sales Rep": "/pages/rx-sales-rep-dashboard#getting-started",
+  Practice: "/pages/practice-dashboard#getting-started",
+  "Practice + Doctor": "/pages/physician-dashboard#getting-started",
+  "Master Clinic": "/pages/clinic-dashboard#getting-started",
+  Clinic: "/pages/clinic-dashboard#getting-started",
+  "Clinic + Doctor": "/pages/clinic-dashboard#getting-started",
+  Physician: "/pages/physician-dashboard#getting-started",
+  "Sales Rep": "/pages/sales-rep-dashboard",
   "Finance Admin": "/pages/shopify-admin",
   // the demo trio is emailed as its physician
-  Demo: "/pages/rx-physician-dashboard#getting-started",
+  Demo: "/pages/physician-dashboard#getting-started",
 };
 
 /**

@@ -170,6 +170,7 @@ export async function commissionRates(productIds) {
  *     own amount for that physician / clinic when it set one, else the
  *     product's default
  *   Practice = whatever is left of lineProfit (never negative)
+ * No doctor / clinic id on the order: that share is 0 and stays with Practice.
  * SOLO doctor: the doctor gets the full lineProfit.
  * Rep $ is a separate flat rate * total units.
  *
@@ -208,9 +209,11 @@ export async function computeOrderCommission(lineItems, ids) {
       c = 0;
       p = 0;
     } else {
+      // No doctor / clinic on the order (the practice wrote the protocol
+      // itself): there is nobody to credit that share to, so Practice keeps it.
       const o = own[mf.key] || {};
-      d = (o.physician ?? mf.physician ?? 0) * qty;
-      c = (o.clinic ?? mf.clinic ?? 0) * qty;
+      d = doctorId ? (o.physician ?? mf.physician ?? 0) * qty : 0;
+      c = clinicId ? (o.clinic ?? mf.clinic ?? 0) * qty : 0;
       p = Math.max(0, lineProfit - d - c);
     }
     doctorAmt += d;
@@ -320,9 +323,11 @@ export async function adjustMonthlyPayout(month, role, entityId, delta) {
 
 /**
  * Mark paid / Undo on ONE payout record: `{ rowId }`, or `{ month, role,
- * entityId, seq? }` (Paid -> the open record; Pending -> that seq, else the
- * latest paid one). Paid closes the record as it stands. Pending moves its
- * whole amount back into the open record. Returns
+ * entityId, seq? }` (Paid -> that seq, else the open record, else the latest
+ * paid one; Pending -> that seq, else the latest paid one). Paid closes the
+ * record as it stands; on a record that is already paid it is the Finance
+ * "Edit" - only the date paid / confirmation # given are updated. Pending
+ * moves its whole amount back into the open record. Returns
  * { ok, row } / { ok: false, error }.
  */
 export async function setPayoutRecordStatus(target, status, { datePaid = "", transactionNo = "" } = {}) {
@@ -333,9 +338,19 @@ export async function setPayoutRecordStatus(target, status, { datePaid = "", tra
   if (status === "Paid") {
     const row = byId
       ? await MonthlyPayout.findOne(byId).lean()
-      : await MonthlyPayout.findOne({ ...key, ...OPEN }).lean();
-    if (!row) return { ok: false, error: "No unpaid payout record found." };
-    if (row.status === "Paid") return { ok: true, row };
+      : hasSeq
+        ? await MonthlyPayout.findOne({ ...key, seq: Number(target.seq) || 0 }).lean()
+        : (await MonthlyPayout.findOne({ ...key, ...OPEN }).lean()) ||
+          (await MonthlyPayout.findOne({ ...key, status: "Paid" }).sort({ seq: -1 }).lean());
+    if (!row) return { ok: false, error: "No payout record found." };
+    if (row.status === "Paid") {
+      const edit = {};
+      if (String(datePaid || "")) edit.datePaid = String(datePaid);
+      if (String(transactionNo || "")) edit.transactionNo = String(transactionNo);
+      if (!Object.keys(edit).length) return { ok: true, row };
+      await MonthlyPayout.updateOne({ _id: row._id }, { $set: edit });
+      return { ok: true, row: await MonthlyPayout.findById(row._id).lean() };
+    }
     await MonthlyPayout.updateOne(
       { _id: row._id },
       { $set: { status: "Paid", datePaid: String(datePaid || ""), transactionNo: String(transactionNo || ""), paidAt: new Date() } },
