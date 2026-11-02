@@ -78,7 +78,10 @@ export const loader = async ({ request }) => {
   }
   const cfg = await getSettings();
   const [rows, total, practices, clinics, reps, roles] = await Promise.all([
-    Account.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(pageSize).lean(),
+    // Newest account first, by when it was added - not updatedAt: the
+    // auto-sync above touches every account on each open, which reshuffled
+    // the list on every reload.
+    Account.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(pageSize).lean(),
     Account.countDocuments(filter),
     Account.find({ practiceId: { $ne: "" }, doctorId: "", clinicId: "" }, { first: 1, last: 1, company: 1, practiceId: 1 }).lean(),
     Account.find({ clinicId: { $ne: "" }, doctorId: "" }, { first: 1, last: 1, company: 1, clinicId: 1, practiceId: 1 }).lean(),
@@ -118,9 +121,10 @@ export const loader = async ({ request }) => {
     practiceOptions: practices.map((a) => ({ label: label(a, a.practiceId), value: a.practiceId })),
     clinicOptions: clinics.map((a) => ({ label: label(a, a.clinicId), value: a.clinicId })),
     repOptions: reps.map((r) => ({ label: `${r.name || r.repId} (${r.repId})`, value: r.repId })),
-    rows: rows.map((a) => {
+    rows: rows.map((a, i) => {
       const masterCount = a.practiceId ? expected[a.practiceId] || 0 : 0;
       return {
+        n: skip + i + 1, // fixed row number across pages
         customerId: a.customerId,
         role: a.role,
         name: `${a.first} ${a.last}`.trim(),
@@ -694,9 +698,10 @@ export default function Accounts() {
         </Card>
         <Card padding="0">
           <DataTable
-            columnContentTypes={["text", "text", "text", "text", "text", "text", "text", "text"]}
-            headings={["Role", "Name", "Business", "Email", "IDs", "Login", "Welcome email", ""]}
+            columnContentTypes={["numeric", "text", "text", "text", "text", "text", "text", "text", "text"]}
+            headings={["#", "Role", "Name", "Business", "Email", "IDs", "Login", "Welcome email", ""]}
             rows={data.rows.map((a) => [
+              a.n,
               <InlineStack key={a.customerId} gap="100">{roleLabel(a.role)}{a.demo ? <Badge tone="info">Demo</Badge> : null}</InlineStack>,
               a.name, a.company, a.email,
               <BlockStack key={a.customerId + "i"} gap="050">

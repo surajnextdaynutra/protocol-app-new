@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Form, useActionData, useLoaderData, useSubmit } from "@remix-run/react";
+import { useActionData, useLoaderData, useSubmit } from "@remix-run/react";
 import {
   Banner,
   BlockStack,
@@ -8,6 +8,7 @@ import {
   DataTable,
   FormLayout,
   InlineStack,
+  Modal,
   Page,
   Text,
   TextField,
@@ -131,25 +132,37 @@ export const action = async ({ request }) => {
   return { ok: false, message: "Unknown action" };
 };
 
-function MasterForm({ columns, master, busy, onClose }) {
+/* Edit / New master product as a popup. Saves through the same "save"
+   intent the action already handles - every field is sent as "c:<column>". */
+function MasterModal({ columns, master, busy, onClose }) {
+  const submit = useSubmit();
   const [row, setRow] = useState(() => Object.fromEntries(columns.map((c) => [c, master?.row?.[c] ?? ""])));
   // columns that came in through a CSV import but are not in the standard list
   const extra = Object.keys(master?.row || {}).filter((c) => !columns.includes(c));
   const saving = useBusy("save");
+  const save = () => {
+    const body = { intent: "save" };
+    for (const c of extra) body["c:" + c] = String(master.row[c] ?? "");
+    for (const c of columns) body["c:" + c] = String(row[c] ?? "");
+    if (master) body["c:Master Key"] = master.masterKey; // never changes once set
+    submit(body, { method: "post" });
+    onClose();
+  };
   return (
-    <Card>
-      <Form method="post" onSubmit={onClose}>
-        <input type="hidden" name="intent" value="save" />
-        {extra.map((c) => (
-          <input key={c} type="hidden" name={"c:" + c} value={String(master.row[c] ?? "")} />
-        ))}
+    <Modal
+      open
+      onClose={onClose}
+      large
+      title={master ? `Edit ${master.masterKey}` : "New master product"}
+      primaryAction={{ content: "Save", onAction: save, loading: saving, disabled: busy && !saving }}
+      secondaryActions={[{ content: "Cancel", onAction: onClose }]}
+    >
+      <Modal.Section>
         <FormLayout>
-          <Text as="h2" variant="headingMd">{master ? `Edit ${master.masterKey}` : "New master product"}</Text>
           {columns.map((c) => (
             <TextField
               key={c}
               label={c}
-              name={"c:" + c}
               value={String(row[c] ?? "")}
               onChange={(v) => setRow((s) => ({ ...s, [c]: v }))}
               multiline={MULTILINE.has(c) ? 3 : false}
@@ -158,14 +171,9 @@ function MasterForm({ columns, master, busy, onClose }) {
               autoComplete="off"
             />
           ))}
-          {master ? <input type="hidden" name="c:Master Key" value={master.masterKey} /> : null}
-          <InlineStack gap="300">
-            <Button submit variant="primary" loading={saving} disabled={busy && !saving}>Save</Button>
-            <Button onClick={onClose}>Cancel</Button>
-          </InlineStack>
         </FormLayout>
-      </Form>
-    </Card>
+      </Modal.Section>
+    </Modal>
   );
 }
 
@@ -256,7 +264,7 @@ export default function Products() {
           </Banner>
         ) : null}
         {editing ? (
-          <MasterForm
+          <MasterModal
             key={editing}
             columns={data.columns}
             master={editing === "new" ? null : current}
