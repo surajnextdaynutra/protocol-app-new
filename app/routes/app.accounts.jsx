@@ -30,6 +30,7 @@ import { BULK_TEMPLATE_HEADER, bulkJobStatus, previewBulkAccounts, startBulkImpo
 import { autoSync } from "../services/autosync.server";
 import {
   COPY_CHOICE_ROLES,
+  MIN_PICKED_PRODUCTS,
   ROLES,
   createPortalAccount,
   deletePortalAccount,
@@ -91,6 +92,12 @@ export const loader = async ({ request }) => {
     Account.distinct("role"),
   ]);
   const label = (a, id) => `${a.company || `${a.first} ${a.last}`.trim() || id} (${id})`;
+  // Dropdowns list in id order (RAP1, RAP2 … RAP10; PRA00001, PRA00002 …),
+  // numeric-aware so RAP10 comes after RAP9, not after RAP1.
+  const byId = (key) => (a, b) =>
+    String(a[key] || "").localeCompare(String(b[key] || ""), undefined, { numeric: true, sensitivity: "base" });
+  // one entry per id (a practice id can sit on more than one account)
+  const uniqueBy = (list, key) => [...new Map(list.map((a) => [a[key], a])).values()];
 
   // Product copies per practice - created automatically as soon as the
   // practice (or a clinic / physician under it) is added; the page polls
@@ -116,11 +123,16 @@ export const loader = async ({ request }) => {
     roleOptions: ROLES,
     copyChoiceRoles: COPY_CHOICE_ROLES,
     productChoices,
+    // same rule as provisioning.server.js minPickedProducts()
+    minPicked: Math.max(1, Math.min(MIN_PICKED_PRODUCTS, productChoices.length)),
     welcomeDelay: Number(cfg.WELCOME_EMAIL_DELAY_MINUTES) >= 0 ? Number(cfg.WELCOME_EMAIL_DELAY_MINUTES) : 30,
     bulkTemplate: BULK_TEMPLATE_HEADER,
-    practiceOptions: practices.map((a) => ({ label: label(a, a.practiceId), value: a.practiceId })),
-    clinicOptions: clinics.map((a) => ({ label: label(a, a.clinicId), value: a.clinicId })),
-    repOptions: reps.map((r) => ({ label: `${r.name || r.repId} (${r.repId})`, value: r.repId })),
+    practiceOptions: uniqueBy(practices, "practiceId").sort(byId("practiceId"))
+      .map((a) => ({ label: label(a, a.practiceId), value: a.practiceId })),
+    clinicOptions: uniqueBy(clinics, "clinicId").sort(byId("clinicId"))
+      .map((a) => ({ label: label(a, a.clinicId), value: a.clinicId })),
+    repOptions: [...reps].sort(byId("repId"))
+      .map((r) => ({ label: `${r.name || r.repId} (${r.repId})`, value: r.repId })),
     rows: rows.map((a, i) => {
       const masterCount = a.practiceId ? expected[a.practiceId] || 0 : 0;
       return {
@@ -222,7 +234,7 @@ function CreateForm({ data, busy, onBulk }) {
   const optionalPractice = v.role === "Master Clinic";
   const needsClinic = v.role === "Physician";
   const copyChoice = data.copyChoiceRoles.includes(v.role);
-  const pickMissing = copyChoice && productMode === "selected" && !picked.length;
+  const pickMissing = copyChoice && productMode === "selected" && picked.length < data.minPicked;
   const takesRep = !["Sales Rep", "Finance Admin", "Demo"].includes(v.role);
 
   return (
@@ -261,7 +273,7 @@ function CreateForm({ data, busy, onBulk }) {
           </FormLayout.Group>
           {copyChoice ? (
             <ProductPick choices={data.productChoices} mode={productMode} setMode={setProductMode}
-              picked={picked} setPicked={setPicked} />
+              picked={picked} setPicked={setPicked} min={data.minPicked} />
           ) : null}
           {v.role !== "Demo" ? (
             <InlineStack gap="300" blockAlign="start">
@@ -289,7 +301,7 @@ function CreateForm({ data, busy, onBulk }) {
 /* "All products" / "Selected products" for a role that starts a new practice:
    which master products that practice gets copies of. The search only narrows
    the list - picks that are filtered out stay picked. */
-function ProductPick({ choices, mode, setMode, picked, setPicked }) {
+function ProductPick({ choices, mode, setMode, picked, setPicked, min = 1 }) {
   const [find, setFind] = useState("");
   const term = find.trim().toLowerCase();
   const shown = term ? choices.filter((c) => c.label.toLowerCase().includes(term)) : choices;
@@ -301,7 +313,7 @@ function ProductPick({ choices, mode, setMode, picked, setPicked }) {
         title="Products for this practice"
         choices={[
           { label: `All products (${choices.length})`, value: "all", helpText: "Copies every master product - and ones added later." },
-          { label: "Selected products", value: "selected", helpText: "Copies only the products picked below." },
+          { label: "Selected products", value: "selected", helpText: `Copies only the products picked below - pick at least ${min}.` },
         ]}
         selected={[mode]}
         onChange={(v) => setMode(v[0])}
@@ -315,8 +327,9 @@ function ProductPick({ choices, mode, setMode, picked, setPicked }) {
                 {term ? "Select shown" : "Select all"}
               </Button>
               <Button onClick={() => setPicked([])} disabled={!picked.length}>Clear</Button>
-              <Text as="span" tone={picked.length ? "subdued" : "critical"}>
+              <Text as="span" tone={picked.length >= min ? "subdued" : "critical"}>
                 {picked.length} of {choices.length} selected
+                {picked.length < min ? ` - pick ${min - picked.length} more (minimum ${min})` : ""}
               </Text>
             </InlineStack>
             <div style={{ maxHeight: 280, overflowY: "auto" }}>

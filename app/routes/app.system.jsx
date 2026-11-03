@@ -67,7 +67,11 @@ export const action = async ({ request }) => {
     if (intent === "import") {
       const res = await importCsv(String(f.get("kind")), String(f.get("csv") || ""));
       return res.ok
-        ? { ok: true, message: `Imported ${res.imported} of ${res.rows} row(s).` }
+        ? {
+            ok: true,
+            message: `Imported ${res.imported} of ${res.rows} row(s).` +
+              (res.notFound?.length ? ` Not found - check the name / Master Key: ${res.notFound.join(", ")}.` : ""),
+          }
         : { ok: false, message: res.error };
     }
     if (intent === "backfill") {

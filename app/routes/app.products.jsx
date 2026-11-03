@@ -17,6 +17,7 @@ import {
 import { ActionResult, SyncStatus, money, useBusy, useRefreshWhile } from "../components/admin";
 import { connectDb } from "../db.server";
 import { Product } from "../models/index.server";
+import { defaultRepCommissionPerUnit } from "../services/commission.server";
 import {
   MASTER_COLUMNS,
   cleanupDuplicateCopies,
@@ -49,16 +50,18 @@ export const loader = async ({ request }) => {
   const sync = autoSync("product-catalogue", syncAllProducts, { minIntervalMs: 60_000 });
   // the custom.* product metafield definitions the app and theme rely on (a fresh store has none)
   autoSync("metafield-defs", ensureProductMetafieldDefinitions, { minIntervalMs: 6 * 3600_000 });
-  const [masters, copyCounts, mirrorTotal, practiceCount] = await Promise.all([
+  const [masters, copyCounts, mirrorTotal, practiceCount, defaultRate] = await Promise.all([
     listMasters(),
     Product.aggregate([{ $match: { masterKey: { $ne: "" } } }, { $group: { _id: "$masterKey", n: { $sum: 1 } } }]),
     Product.countDocuments({}),
     Product.distinct("practiceId", { practiceId: { $ne: "" }, masterKey: { $ne: "" } }),
+    defaultRepCommissionPerUnit(),
   ]);
   const counts = Object.fromEntries(copyCounts.map((c) => [c._id, c.n]));
   return {
     sync,
     columns: MASTER_COLUMNS,
+    defaultRate,
     mirrorTotal,
     practiceCount: practiceCount.length,
     masters: masters.map((m) => ({ masterKey: m.masterKey, row: m.row || {}, copies: counts[m.masterKey] || 0 })),
@@ -190,10 +193,18 @@ const HELP = {
   Metafields: 'Optional JSON: [{"namespace":"custom","key":"…","type":"…","value":"…"}]',
   Images: "Comma-separated image URLs; the first is the featured image.",
   "MSRP Low": "A practice copy launches at this price.",
+  "MFG COGS": "Wholesale price = MFG COGS + the practice's sales rep $/unit (default $1). Saved to custom.mfg_cogs on the base product and every copy.",
+  "Wholsale Price": "Old fixed wholesale price - used only while MFG COGS is blank.",
   "Related Categories": "Separate values with a pipe |",
   Highlights: "Separate values with a pipe |",
   "Formulation Features": "Comma-separated file URLs.",
 };
+
+/** A money cell ("$17.30", "17.3") as a number, or null when blank. */
+function num(v) {
+  const s = String(v ?? "").replace(/[^0-9.]/g, "");
+  return s === "" || isNaN(Number(s)) ? null : Number(s);
+}
 
 export default function Products() {
   const data = useLoaderData();
@@ -274,15 +285,20 @@ export default function Products() {
         ) : null}
         <Card padding="0">
           <DataTable
-            columnContentTypes={["text", "text", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "text"]}
-            headings={["Master key", "Title", "SKU", "Status", "Price", "Wholesale", "MSRP low", "Inventory", "Copies", ""]}
+            columnContentTypes={["text", "text", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "text"]}
+            headings={["Master key", "Title", "SKU", "Status", "Price", "MFG COGS", `Wholesale (COGS + $${Number(data.defaultRate).toFixed(2)})`, "MSRP low", "Inventory", "Copies", ""]}
             rows={data.masters.map((m) => [
               m.masterKey,
               m.row.Title || "",
               m.row.SKU || "",
               m.row.Status || "active",
               m.row.Price ? money(String(m.row.Price).replace(/[^0-9.]/g, "")) : "",
-              m.row["Wholsale Price"] ? money(String(m.row["Wholsale Price"]).replace(/[^0-9.]/g, "")) : "",
+              num(m.row["MFG COGS"]) !== null ? money(num(m.row["MFG COGS"])) : "",
+              // default wholesale; a rep's own rate changes it per practice.
+              // No MFG COGS yet -> the old fixed Wholsale Price (marked "old")
+              num(m.row["MFG COGS"]) !== null
+                ? money(num(m.row["MFG COGS"]) + Number(data.defaultRate))
+                : num(m.row["Wholsale Price"]) !== null ? `${money(num(m.row["Wholsale Price"]))} (old)` : "",
               m.row["MSRP Low"] ? money(String(m.row["MSRP Low"]).replace(/[^0-9.]/g, "")) : "",
               m.row.Inventory ?? "",
               m.copies,

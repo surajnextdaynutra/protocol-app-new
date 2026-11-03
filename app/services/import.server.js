@@ -11,7 +11,7 @@ import {
   SalesRep,
 } from "../models/index.server";
 import { encryptJson } from "./crypto.server";
-import { saveMaster } from "./catalog.server";
+import { MasterProduct, saveMaster } from "./catalog.server";
 import { clearDemoCache, parseAmount } from "./ids.server";
 import { logEvent } from "./log.server";
 import { setSetting } from "./settings.server";
@@ -390,17 +390,32 @@ async function importMasters(csvText) {
   const rows = parseCsv(csvText);
   if (rows.length < 2) return { rows: 0, imported: 0 };
   const headers = rows[0].map((h) => String(h || "").trim());
+  // A file without the full sheet's columns (e.g. just Title + MFG COGS) only
+  // UPDATES existing masters - it never creates a product from a half row.
+  const fullSheet = headers.includes("Price");
+  const masters = await MasterProduct.find({}, { masterKey: 1, row: 1 }).lean();
+  const byKey = new Map(masters.map((m) => [m.masterKey.toLowerCase(), m]));
+  const byTitle = new Map(masters.map((m) => [String(m.row?.Title || "").trim().toLowerCase(), m]));
   let imported = 0;
+  const notFound = [];
   for (const r of rows.slice(1)) {
     const row = {};
     headers.forEach((h, i) => {
       if (h) row[h] = String(r[i] ?? "").trim();
     });
     if (!row["Master Key"] && !row["Title"]) continue;
-    await saveMaster(row);
+    const existing =
+      byKey.get(String(row["Master Key"] || "").toLowerCase()) ||
+      byTitle.get(String(row["Title"] || "").trim().toLowerCase());
+    if (!existing && !fullSheet) {
+      notFound.push(row["Master Key"] || row["Title"]);
+      continue;
+    }
+    // columns not in the file keep their saved values
+    await saveMaster(existing ? { ...existing.row, ...row, "Master Key": existing.masterKey } : row);
     imported++;
   }
-  return { rows: rows.length - 1, imported };
+  return { rows: rows.length - 1, imported, notFound };
 }
 
 export const IMPORT_KINDS = [
@@ -421,7 +436,8 @@ export async function importCsv(kind, csvText) {
   await connectDb();
   if (kind === "masters") {
     const res = await importMasters(csvText);
-    logEvent("job", "import:masters", `rows=${res.rows} imported=${res.imported}`);
+    const missed = res.notFound?.length ? ` not found (no such product - check the name): ${res.notFound.join(", ")}` : "";
+    logEvent("job", "import:masters", `rows=${res.rows} imported=${res.imported}${missed}`, null, !missed);
     return res.rows ? { ok: true, ...res } : { ok: false, error: "No data rows found in the file." };
   }
   const run = importers[kind];

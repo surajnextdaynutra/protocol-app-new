@@ -116,10 +116,12 @@ export async function repDashboard({
   if (!rep) return { ok: false, error: "missing rep id" };
 
   const cfg = await getSettings();
-  const perUnit = await repCommissionPerUnit();
+  const perUnit = await repCommissionPerUnit(rep);
   // A demo order never pays a rep (same rule as the payout ledger) - it still
-  // counts toward orders / units / sales.
-  const earnOf = (o) => (o.demo ? 0 : o.units * perUnit);
+  // counts toward orders / units / sales. An order already credited to this
+  // rep shows the amount frozen on it when it was paid, so changing the rep's
+  // rate never rewrites past orders; anything else is estimated at today's rate.
+  const earnOf = (o) => (o.demo ? 0 : o.repId === rep ? o.repAmount : o.units * perUnit);
   const cutoff = fromMs > 0 ? fromMs : days > 0 ? Date.now() - days * 86400000 : 0;
   const cutoffTo = toMs > 0 ? toMs : 0;
   const now = new Date();
@@ -136,7 +138,7 @@ export async function repDashboard({
     doctorOptions: [],
     clinicOptions: [],
     practiceOptions: [],
-    commission: { total: 0, paid: 0, pending: 0 },
+    commission: { total: 0, paid: 0, pending: 0, ratePerUnit: perUnit },
   };
 
   const finishEmpty = async () => {

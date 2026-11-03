@@ -8,10 +8,16 @@ import {
   Prescription,
   SalesRep,
 } from "../../models/index.server";
-import { payoutSplit, setPayoutRecordStatus } from "../commission.server";
+import {
+  defaultRepCommissionPerUnit,
+  ownRepRate,
+  parseRepRate,
+  payoutSplit,
+  setPayoutRecordStatus,
+} from "../commission.server";
 import { decryptJson } from "../crypto.server";
 import { demoIdSet } from "../ids.server";
-import { kvGet, kvSet } from "../log.server";
+import { kvGet, kvSet, logEvent } from "../log.server";
 import { gid, gql } from "../shopify-admin.server";
 import { invalidateResponses } from "../response-cache.server";
 
@@ -547,6 +553,8 @@ export async function financeDashboard(p) {
     }
   }
   const assignedByRep = Object.fromEntries(salesReps.map((r) => [r.repId, r.assignedPracticeIds || []]));
+  const ownRateByRep = Object.fromEntries(salesReps.map((r) => [r.repId, ownRepRate(r.commissionPerUnit)]));
+  const defaultRepRate = await defaultRepCommissionPerUnit();
   const reps = Object.values(byRep)
     .map((rp) => {
       const repPractices = (assignedByRep[rp.id] || [])
@@ -569,6 +577,9 @@ export async function financeDashboard(p) {
         newClients: referrals.byEmail[repEmail] || referrals.byName[String(rp.name || "").toLowerCase()] || 0,
         totalPhysicians: sum("totalPhysicians"),
         earned: rp.earned, paid: rp.paid, pending: rp.pending, practices: repPractices,
+        // $ per unit: ownRate = set for this rep (null = uses the default)
+        ownRate: ownRateByRep[rp.id] ?? null,
+        ratePerUnit: ownRateByRep[rp.id] ?? defaultRepRate,
       };
     })
     .sort((a, b) => b.earned - a.earned);
@@ -579,6 +590,7 @@ export async function financeDashboard(p) {
     clinicCount: clinics.length,
     practiceCount: practices.length,
     repCount: reps.length,
+    repDefaultRate: defaultRepRate,
   };
 
   /* ---- every store order in the window (not only ledger ones) ---- */
@@ -814,6 +826,28 @@ export async function setPayoutStatus(body) {
   const ackId = String(body.ackEntityId || "").trim();
   if (status === "Paid" && ackType && ackId) await ackBankingChange(ackType, ackId);
   return { ok: true, month, role, id, seq: row.seq || 0, status: row.status, amount: row.amount, merged: !!res.merged };
+}
+
+/* --------------------------- rep commission rate ------------------------ */
+
+/** Sets one sales rep's $ per unit (`rate` blank = back to the default).
+ *  Applies to orders paid from now on; past orders keep their frozen amount. */
+export async function setRepRate(body, updatedBy = "") {
+  const id = String(body.id || "").trim();
+  if (!id) return { ok: false, error: "rep id is required" };
+  let rate;
+  try {
+    rate = parseRepRate(body.rate);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  await connectDb();
+  const res = await SalesRep.updateOne({ repId: id }, { $set: { commissionPerUnit: rate } });
+  if (!res.matchedCount) return { ok: false, error: `No sales rep record for ${id}.` };
+  invalidateResponses();
+  logEvent("job", "rep:" + id, `commission per unit ${rate === null ? "reset to default" : "set to $" + rate.toFixed(2)}${updatedBy ? " by " + updatedBy : ""}`);
+  const defaultRate = await defaultRepCommissionPerUnit();
+  return { ok: true, id, ownRate: rate, ratePerUnit: rate ?? defaultRate, defaultRate };
 }
 
 /**

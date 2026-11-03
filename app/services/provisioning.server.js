@@ -1,7 +1,7 @@
 import { connectDb } from "../db.server";
 import { Account, Counter, DemoAccount, Product, SalesRep } from "../models/index.server";
 import { removeAccount, roleFromTags, upsertAccount } from "./accounts.server";
-import { ensurePracticeCopies, practiceCopiesStatus, removePracticeCopiesIfUnused, setPracticeProducts } from "./catalog.server";
+import { MasterProduct, ensurePracticeCopies, practiceCopiesStatus, removePracticeCopiesIfUnused, setPracticeProducts } from "./catalog.server";
 import { DOCTOR_TAG, clearDemoCache, idsFromCustomerTags, tagVal } from "./ids.server";
 import { kvGet, kvSet, logEvent } from "./log.server";
 import { getSettings, isTrue, setSettings } from "./settings.server";
@@ -39,6 +39,14 @@ export const ROLES = [
 // product copies - only these get the "All / Selected products" choice. A
 // clinic or physician joins an existing practice and uses its products.
 export const COPY_CHOICE_ROLES = ["Practice", "Practice + Doctor", "Demo"];
+
+// "Selected products" must pick at least this many (or every master product
+// when the catalogue has fewer than this).
+export const MIN_PICKED_PRODUCTS = 5;
+export async function minPickedProducts() {
+  const total = await MasterProduct.countDocuments();
+  return Math.max(1, Math.min(MIN_PICKED_PRODUCTS, total));
+}
 
 /** The picked master keys from the form (JSON array or array), or null for
  *  "All products". */
@@ -338,7 +346,13 @@ export async function createPortalAccount(input) {
   if (!ROLES.includes(role)) return { ok: false, error: "Unknown role: " + role };
 
   const picked = pickedProducts(input, role);
-  if (picked && !picked.length) return { ok: false, error: "Pick at least one product, or choose All products." };
+  if (picked) {
+    const min = await minPickedProducts();
+    const count = new Set(picked).size;
+    if (count < min) {
+      return { ok: false, error: `Pick at least ${min} products (${count} picked), or choose All products.` };
+    }
+  }
 
   if (role === "Demo") return createDemoTrio({ firstName, email, picked });
 

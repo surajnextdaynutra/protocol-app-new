@@ -12,6 +12,7 @@ import { logEvent } from "./log.server";
 import { getSettings } from "./settings.server";
 import { escQ, gid, gql, legacyId, metafieldsSet, mfNum } from "./shopify-admin.server";
 import { invalidateResponses } from "./response-cache.server";
+import { mfgCogsFor, wholesalePrice } from "./wholesale-price.server";
 
 /* Per-order commission ledger + month-wise payout summary (was Payouts.gs).
 
@@ -37,10 +38,42 @@ const EMPTY_SPLIT = {
   lines: [],
 };
 
-/** Dollars of rep commission per product unit (default $1). */
-export async function repCommissionPerUnit() {
+/** The default $ of rep commission per product unit (Settings ->
+ *  COMMISSION_PER_UNIT, $1 when unset). */
+export async function defaultRepCommissionPerUnit() {
   const v = Number((await getSettings()).COMMISSION_PER_UNIT);
   return v > 0 ? v : 1;
+}
+
+/** A rep's own per-unit rate as stored, or null when they use the default. */
+export function ownRepRate(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** Dollars of rep commission per product unit for one rep: the rate set on
+ *  their SalesRep record, else the default. Without a rep id: the default. */
+export async function repCommissionPerUnit(repId) {
+  if (repId) {
+    await connectDb();
+    const rep = await SalesRep.findOne({ repId: String(repId) }, { commissionPerUnit: 1 }).lean();
+    const own = ownRepRate(rep?.commissionPerUnit);
+    if (own !== null) return own;
+  }
+  return defaultRepCommissionPerUnit();
+}
+
+/** Parses a rate typed by an admin: blank -> null (use the default), else a
+ *  dollar amount 0-1000 rounded to cents. Throws on anything else. */
+export function parseRepRate(raw) {
+  const s = String(raw ?? "").trim().replace(/^\$/, "");
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0 || n > 1000) {
+    throw new Error("Commission per unit must be a dollar amount between 0 and 1000 (e.g. 1, 0.75, 0.5).");
+  }
+  return Math.round(n * 100) / 100;
 }
 
 /**
@@ -62,11 +95,11 @@ export async function repForOrder(ids) {
   await connectDb();
   const reps = await SalesRep.find(
     { assignedPracticeIds: { $in: candidates }, active: { $ne: false } },
-    { repId: 1, name: 1, assignedPracticeIds: 1 },
+    { repId: 1, name: 1, assignedPracticeIds: 1, commissionPerUnit: 1 },
   ).lean();
   for (const c of candidates) {
     const rep = reps.find((r) => r.assignedPracticeIds.includes(c));
-    if (rep) return { id: rep.repId, name: rep.name || rep.repId };
+    if (rep) return { id: rep.repId, name: rep.name || rep.repId, rate: ownRepRate(rep.commissionPerUnit) };
   }
   return null;
 }
@@ -119,11 +152,13 @@ export async function commissionRates(productIds) {
   await connectDb();
   const local = await Product.find(
     { productId: { $in: ids } },
-    { productId: 1, wholesale: 1, physicianCommission: 1, clinicCommission: 1, masterKey: 1 },
+    { productId: 1, wholesale: 1, physicianCommission: 1, clinicCommission: 1, masterKey: 1, mfgCogs: 1, practiceId: 1, tags: 1 },
   ).lean();
+  const cogs = await mfgCogsFor(local);
   for (const p of local) {
     map[p.productId] = {
       wholesale: p.wholesale || 0,
+      mfgCogs: cogs[p.productId] ?? null,
       physician: p.physicianCommission || 0,
       clinic: p.clinicCommission || 0,
       key: productKey(p),
@@ -140,6 +175,7 @@ export async function commissionRates(productIds) {
               id
               tags
               wholesaleMf: metafield(namespace: "custom", key: "wholsale_price") { value type }
+              cogsMf: metafield(namespace: "custom", key: "mfg_cogs") { value type }
               physicianMf: metafield(namespace: "custom", key: "physician_commission") { value type }
               clinicMf: metafield(namespace: "custom", key: "clinic_commission") { value type }
             }
@@ -151,6 +187,8 @@ export async function commissionRates(productIds) {
         if (!n?.id) continue;
         map[legacyId(n.id)] = {
           wholesale: mfNum(n.wholesaleMf),
+          // not synced yet: only its own value (a copy's base is looked up once mirrored)
+          mfgCogs: n.cogsMf?.value ? mfNum(n.cogsMf) : null,
           physician: mfNum(n.physicianMf),
           clinic: mfNum(n.clinicMf),
           key: productKey({ productId: n.id, masterKey: copyMasterKey(n.tags || []) }),
@@ -192,6 +230,11 @@ export async function computeOrderCommission(lineItems, ids) {
     ? {}
     : await overridesFor(practiceId, { doctorId, clinicId }, Object.values(rates).map((r) => r.key));
 
+  // The rep's own $/unit, else the default - also part of the wholesale price
+  // (MFG COGS + Sales Commission) that profit is measured from.
+  const rep = await repForOrder(ids);
+  const repRate = rep?.rate ?? (await defaultRepCommissionPerUnit());
+
   let doctorAmt = 0;
   let clinicAmt = 0;
   let practiceAmt = 0;
@@ -200,8 +243,10 @@ export async function computeOrderCommission(lineItems, ids) {
     const qty = li.quantity || 1;
     units += qty;
     const sell = Number(li.price) || 0;
-    const mf = rates[String(li.productId)] || { wholesale: 0, physician: 0, clinic: 0 };
-    const lineProfit = Math.max(0, (sell - mf.wholesale) * qty);
+    const mf = rates[String(li.productId)] || { wholesale: 0, mfgCogs: null, physician: 0, clinic: 0 };
+    // no MFG COGS on the product yet -> its old custom.wholsale_price
+    const wholesale = wholesalePrice(mf.mfgCogs, repRate, mf.wholesale || 0);
+    const lineProfit = Math.max(0, (sell - wholesale) * qty);
 
     let d, c, p;
     if (solo) {
@@ -229,12 +274,12 @@ export async function computeOrderCommission(lineItems, ids) {
       // solo case too, where there is no product rate at all.
       physicianRate: d / qty,
       clinicRate: c / qty,
-      wholesale: mf.wholesale || 0,
+      wholesale,
     };
   });
 
-  const rep = await repForOrder(ids);
-  const repAmt = rep ? units * (await repCommissionPerUnit()) : 0;
+  // frozen on the order from here on
+  const repAmt = rep ? units * repRate : 0;
 
   return {
     doctorId,

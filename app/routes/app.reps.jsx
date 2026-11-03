@@ -15,7 +15,13 @@ import {
 import { ActionResult, money, useBusy } from "../components/admin";
 import { connectDb } from "../db.server";
 import { Account, MonthlyPayout, SalesRep } from "../models/index.server";
-import { PAID_EXPR } from "../services/commission.server";
+import {
+  defaultRepCommissionPerUnit,
+  ownRepRate,
+  PAID_EXPR,
+  parseRepRate,
+} from "../services/commission.server";
+import { invalidateResponses } from "../services/response-cache.server";
 import { authenticate } from "../shopify.server";
 
 /* Sales reps - replaces the "Sales Reps" tab. The practices (or practice-less
@@ -25,13 +31,14 @@ import { authenticate } from "../shopify.server";
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
   await connectDb();
-  const [reps, owed, practices] = await Promise.all([
+  const [reps, owed, practices, defaultRate] = await Promise.all([
     SalesRep.find({}).sort({ name: 1 }).lean(),
     MonthlyPayout.aggregate([
       { $match: { role: "Rep" } },
       { $group: { _id: "$entityId", amount: { $sum: "$amount" }, paid: { $sum: PAID_EXPR } } },
     ]),
     Account.find({ practiceId: { $ne: "" } }, { practiceId: 1, company: 1, first: 1, last: 1, doctorId: 1, clinicId: 1 }).lean(),
+    defaultRepCommissionPerUnit(),
   ]);
   const totals = {};
   for (const o of owed) {
@@ -46,6 +53,7 @@ export const loader = async ({ request }) => {
   }
   return {
     practiceNames,
+    defaultRate,
     reps: reps.map((r) => ({
       repId: r.repId,
       name: r.name || "",
@@ -53,6 +61,7 @@ export const loader = async ({ request }) => {
       notes: r.notes || "",
       active: r.active !== false,
       assigned: (r.assignedPracticeIds || []).join(", "),
+      rate: ownRepRate(r.commissionPerUnit) === null ? "" : String(ownRepRate(r.commissionPerUnit)),
       paid: totals[r.repId]?.paid || 0,
       pending: totals[r.repId]?.pending || 0,
     })),
@@ -69,6 +78,12 @@ export const action = async ({ request }) => {
     .split(/[,\s]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+  let rate;
+  try {
+    rate = parseRepRate(f.get("rate"));
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
   // a practice belongs to one rep
   await SalesRep.updateMany({ repId: { $ne: repId } }, { $pull: { assignedPracticeIds: { $in: assigned } } });
   await SalesRep.updateOne(
@@ -80,14 +95,16 @@ export const action = async ({ request }) => {
         notes: String(f.get("notes") || ""),
         active: f.get("active") === "true",
         assignedPracticeIds: assigned,
+        commissionPerUnit: rate,
       },
     },
     { upsert: true },
   );
+  invalidateResponses(); // rep + finance dashboards show the new rate at once
   return { ok: true, message: `Saved ${repId}.` };
 };
 
-function RepCard({ rep, practiceNames, busy, isNew }) {
+function RepCard({ rep, practiceNames, defaultRate, busy, isNew }) {
   const [v, setV] = useState(rep);
   const set = (k) => (val) => setV((s) => ({ ...s, [k]: val }));
   // every card posts the same fields; _card tells which one is saving
@@ -132,6 +149,19 @@ function RepCard({ rep, practiceNames, busy, isNew }) {
             autoComplete="off"
             helpText={names.length ? names.join(" · ") : "Comma-separated practice ids (PRA…); a clinic id (CLN…) for a clinic with no parent practice."}
           />
+          <TextField
+            label="Commission per unit ($)"
+            name="rate"
+            type="number"
+            min={0}
+            step={0.01}
+            prefix="$"
+            value={v.rate}
+            onChange={set("rate")}
+            placeholder={Number(defaultRate).toFixed(2)}
+            autoComplete="off"
+            helpText={`Paid to this rep for every product unit sold, e.g. 1, 0.75, 0.5. Blank = the default $${Number(defaultRate).toFixed(2)} (Settings → COMMISSION_PER_UNIT). A change applies to orders paid from now on.`}
+          />
           <TextField label="Notes" name="notes" value={v.notes} onChange={set("notes")} autoComplete="off" />
           <input type="hidden" name="active" value={String(v.active)} />
           <InlineStack gap="400" blockAlign="center">
@@ -145,20 +175,21 @@ function RepCard({ rep, practiceNames, busy, isNew }) {
 }
 
 export default function Reps() {
-  const { reps, practiceNames } = useLoaderData();
+  const { reps, practiceNames, defaultRate } = useLoaderData();
   const actionData = useActionData();
   const busy = useBusy();
   return (
-    <Page title="Sales reps" subtitle="Which practices each rep is paid commission on.">
+    <Page title="Sales reps" subtitle="Which practices each rep is paid commission on, and how much per unit.">
       <BlockStack gap="400">
         <ActionResult data={actionData} />
         {reps.map((r) => (
-          <RepCard key={r.repId} rep={r} practiceNames={practiceNames} busy={busy} />
+          <RepCard key={r.repId} rep={r} practiceNames={practiceNames} defaultRate={defaultRate} busy={busy} />
         ))}
         <RepCard
           isNew
-          rep={{ repId: "", name: "", email: "", notes: "", active: true, assigned: "", paid: 0, pending: 0 }}
+          rep={{ repId: "", name: "", email: "", notes: "", active: true, assigned: "", rate: "", paid: 0, pending: 0 }}
           practiceNames={practiceNames}
+          defaultRate={defaultRate}
           busy={busy}
         />
       </BlockStack>

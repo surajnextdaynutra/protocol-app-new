@@ -5,6 +5,7 @@ import { applyViewerEarnings, productKey } from "./earnings.server";
 import { copyMasterKey, tagVal } from "./ids.server";
 import { logEvent } from "./log.server";
 import { escQ, gid, gql, gqlAll, legacyId, metafieldsSet } from "./shopify-admin.server";
+import { mfgCogsFor, salesCommissionFor, wholesalePrice } from "./wholesale-price.server";
 
 /* Product catalogue + Product Management (pricing / commission).
 
@@ -18,6 +19,7 @@ const STORE_CURRENCY = "USD";
 // custom.* metafields mirrored on every product.
 const MF_KEYS = [
   "wholsale_price", // sic - the store's key really is spelled this way
+  "mfg_cogs", // wholesale price = MFG COGS + rep $/unit (wholesale-price.server.js)
   "msrp_low",
   "msrp_high",
   "patient_price",
@@ -31,6 +33,7 @@ const PRODUCT_FIELDS = `#graphql
     id title handle status vendor productType tags description templateSuffix updatedAt
     publishedAt
     featuredMedia { preview { image { url } } }
+    media(first: 10) { nodes { status preview { image { url } } } }
     variants(first: 50) {
       nodes {
         id title sku price compareAtPrice position availableForSale inventoryQuantity
@@ -73,6 +76,21 @@ function richTextPlain(mf) {
   return parts.join(" ");
 }
 
+/** The product's image URL. Media added from a URL (practice copies) is
+ *  processed by Shopify in the background and has no preview until it is
+ *  READY, so the featured media can be blank while another one is ready. */
+function productImage(n) {
+  const featured = n.featuredMedia?.preview?.image?.url;
+  if (featured) return featured;
+  const ready = (n.media?.nodes || []).find((m) => m.preview?.image?.url);
+  return ready ? ready.preview.image.url : "";
+}
+
+/** True while some of the product's media is still uploading / processing. */
+function mediaPending(n) {
+  return (n.media?.nodes || []).some((m) => m.status === "UPLOADED" || m.status === "PROCESSING");
+}
+
 function productDoc(n) {
   const tags = n.tags || [];
   const variants = (n.variants?.nodes || []).map((v) => ({
@@ -95,11 +113,12 @@ function productDoc(n) {
     vendor: n.vendor || "",
     productType: n.productType || "",
     tags,
-    image: n.featuredMedia?.preview?.image?.url || "",
+    image: productImage(n),
     templateSuffix: n.templateSuffix || "",
     variants,
     price: variants[0]?.price || 0,
     wholesale: mfNumber(mf("wholsale_price")) || 0,
+    mfgCogs: mfNumber(mf("mfg_cogs")),
     physicianCommission: mfNumber(mf("physician_commission")) || 0,
     clinicCommission: mfNumber(mf("clinic_commission")) || 0,
     metafields: {
@@ -135,13 +154,24 @@ export async function syncProduct(productId) {
   }
   const doc = productDoc(data.product);
   await Product.updateOne({ productId: doc.productId }, { $set: doc }, { upsert: true });
-  return doc;
+  return { ...doc, mediaPending: !doc.image && mediaPending(data.product) };
 }
+
+// Re-reads while the image is still processing (Shopify sends no webhook
+// when it finishes, so the mirror would keep the blank image).
+const MEDIA_RETRY_MS = [20000, 60000, 180000, 600000];
 
 /** Refreshes one product in the mirror a few seconds after the app changed
  *  it (Shopify's own webhook follows too; this just closes the gap). */
-export function syncProductLater(productId) {
-  setTimeout(() => syncProduct(productId).catch(() => {}), 4000).unref?.();
+export function syncProductLater(productId, attempt = 0) {
+  const wait = attempt === 0 ? 4000 : MEDIA_RETRY_MS[attempt - 1];
+  setTimeout(() => {
+    syncProduct(productId)
+      .then((doc) => {
+        if (doc?.mediaPending && attempt < MEDIA_RETRY_MS.length) syncProductLater(productId, attempt + 1);
+      })
+      .catch(() => {});
+  }, wait).unref?.();
 }
 
 export async function removeProduct(productId) {
@@ -204,6 +234,27 @@ async function ensureMirror() {
 
 /* ------------------------- Product Management --------------------------- */
 
+/** masterKey -> image, for practice copies that have no image yet (still
+ *  processing, or the upload failed): the base product (rxbase:<key>) or any
+ *  other copy of the same master has the same picture. */
+async function masterImages(rows) {
+  const keys = [...new Set(rows.filter((p) => !p.image && p.masterKey).map((p) => p.masterKey))];
+  const out = new Map();
+  if (!keys.length) return out;
+  const found = await Product.find(
+    {
+      image: { $nin: ["", null] },
+      $or: [{ masterKey: { $in: keys } }, { tags: { $in: keys.map((k) => `rxbase:${k}`) } }],
+    },
+    { masterKey: 1, tags: 1, image: 1 },
+  ).lean();
+  for (const f of found) {
+    const key = f.masterKey || tagVal(f.tags, "rxbase:");
+    if (key && !out.has(key)) out.set(key, f.image);
+  }
+  return out;
+}
+
 /**
  * Products for the "Product Management" tab. practice_id is preferred (one
  * shared product set per practice); clinic_id / doctor_id only match legacy
@@ -227,6 +278,14 @@ export async function listPracticeProducts(doctorId, clinicId, practiceId, viewe
   const rows = await Product.find({ ...idQ, status: "ACTIVE", "metafields.published": true })
     .sort({ title: 1 })
     .lean();
+  const borrowed = await masterImages(rows);
+  // Cost = MFG COGS + this practice's rep $/unit (default $1); a product
+  // without MFG COGS keeps its custom.wholsale_price
+  const { rate } = await salesCommissionFor({
+    practiceId: practiceId || rows.find((r) => r.practiceId)?.practiceId || "",
+    clinicId,
+  });
+  const cogs = await mfgCogsFor(rows);
 
   const products = rows.map((p) => {
     const m = p.metafields || {};
@@ -238,9 +297,9 @@ export async function listPracticeProducts(doctorId, clinicId, practiceId, viewe
       id: gid.product(p.productId),
       title: p.title,
       sku: variant.sku || "",
-      image: p.image || "",
+      image: p.image || borrowed.get(p.masterKey) || "",
       price: patientPrice != null ? patientPrice : price,
-      cost: m.cost != null ? m.cost : 0,
+      cost: wholesalePrice(cogs[p.productId], rate, m.cost != null ? m.cost : 0),
       msrpLow: msrpLow != null ? msrpLow : 0,
       msrpHigh: m.msrpHigh != null ? m.msrpHigh : 0,
       patientPrice: patientPrice != null ? patientPrice : msrpLow != null ? msrpLow : price,

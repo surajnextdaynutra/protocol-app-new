@@ -4,7 +4,7 @@ import { refreshAccountFromWebhook, removeAccount } from "./accounts.server";
 import { logEvent } from "./log.server";
 import { processOrder, processOrderDelete, processOrderUpdate } from "./orders.server";
 import { pullMasterFromBase, pullStockFromInventoryLevel } from "./catalog.server";
-import { removeProduct, syncProduct } from "./products.server";
+import { removeProduct, syncProduct, syncProductLater } from "./products.server";
 import { invalidateResponses } from "./response-cache.server";
 
 /* Shopify webhooks. The signature is verified by the route
@@ -25,7 +25,11 @@ const handlers = {
   CUSTOMERS_CREATE: (p) => refreshAccountFromWebhook(p),
   CUSTOMERS_UPDATE: (p) => refreshAccountFromWebhook(p),
   CUSTOMERS_DELETE: (p) => removeAccount(p.id),
-  PRODUCTS_CREATE: (p) => syncProduct(p.id),
+  PRODUCTS_CREATE: async (p) => {
+    const doc = await syncProduct(p.id);
+    // image still processing -> re-read until it is ready
+    if (doc?.mediaPending) syncProductLater(p.id, 1);
+  },
   PRODUCTS_UPDATE: async (p) => {
     await syncProduct(p.id);
     // a base product edited in Shopify admin -> its master in the app follows

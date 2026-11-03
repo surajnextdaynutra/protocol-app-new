@@ -65,7 +65,7 @@ const prescriptionSchema = new Schema(
     emailSentAt: { type: Date, default: null },
     purchasedAt: { type: Date, default: null },
     orderName: { type: String, default: "" },
-    orderId: { type: String, default: "" },
+    orderId: { type: String, default: "", index: true }, // looked up on every paid order
     openedAt: { type: Date, default: null },
     checkoutAt: { type: Date, default: null },
     reminder1At: { type: Date, default: null },
@@ -76,6 +76,12 @@ const prescriptionSchema = new Schema(
   { timestamps: true },
 );
 prescriptionSchema.index({ status: 1, createdAt: -1 });
+// admin Prescriptions list (no filter, newest first)
+prescriptionSchema.index({ createdAt: -1 });
+// provider / clinic / practice / rep dashboards: one owner id + date window, newest first
+prescriptionSchema.index({ doctorId: 1, createdAt: -1 });
+prescriptionSchema.index({ clinicId: 1, createdAt: -1 });
+prescriptionSchema.index({ practiceId: 1, createdAt: -1 });
 export const Prescription = model(
   "Prescription",
   prescriptionSchema,
@@ -209,6 +215,15 @@ orderSchema.index({ clinicId: 1, orderCreatedAt: -1 });
 orderSchema.index({ practiceId: 1, orderCreatedAt: -1 });
 orderSchema.index({ "commission.repId": 1, orderCreatedAt: -1 });
 orderSchema.index({ "customer.id": 1, orderCreatedAt: -1 });
+// every dashboard / home-page / Orders-page query filters on the `rx` tag;
+// without it the Orders ledger's $or ({commission.logged} OR {tags}) is a full scan
+orderSchema.index({ tags: 1, orderCreatedAt: -1 });
+// earnings history + per-period CSVs (credited ids, sorted by date)
+orderSchema.index({ "commission.doctorId": 1, orderCreatedAt: -1 });
+orderSchema.index({ "commission.clinicId": 1, orderCreatedAt: -1 });
+orderSchema.index({ "commission.practiceId": 1, orderCreatedAt: -1 });
+// builder's patient-history popup
+orderSchema.index({ patientId: 1, orderCreatedAt: -1 });
 export const Order = model("Order", orderSchema, "orders");
 
 /* ---------------------------------------------------------------------------
@@ -236,6 +251,8 @@ const monthlyPayoutSchema = new Schema(
 );
 monthlyPayoutSchema.index({ month: 1, role: 1, entityId: 1, seq: 1 }, { unique: true });
 monthlyPayoutSchema.index({ role: 1, entityId: 1 });
+// Payouts page sort (newest month first)
+monthlyPayoutSchema.index({ month: -1, role: 1, entityId: 1, seq: 1 });
 export const MonthlyPayout = model(
   "MonthlyPayout",
   monthlyPayoutSchema,
@@ -270,6 +287,8 @@ const salesRepSchema = new Schema(
     customerId: { type: String, default: "" },
     assignedPracticeIds: { type: [String], default: [], index: true }, // practice_id OR clinic_id values
     commissionPercent: { type: Number, default: null },
+    // $ per product unit for THIS rep; null = the COMMISSION_PER_UNIT default
+    commissionPerUnit: { type: Number, default: null },
     notes: { type: String, default: "" },
     active: { type: Boolean, default: true },
   },
@@ -297,7 +316,9 @@ const accountSchema = new Schema(
     clinicName: { type: String, default: "" },
     doctorId: { type: String, default: "", index: true },
     clinicId: { type: String, default: "", index: true },
-    clinicIds: { type: [String], default: [] },
+    // indexed: the clinic directory / rep queries $or on clinicId + clinicIds,
+    // and one unindexed $or branch turns the whole query into a full scan
+    clinicIds: { type: [String], default: [], index: true },
     practiceId: { type: String, default: "", index: true },
     repId: { type: String, default: "", index: true },
     wholesale: { type: Boolean, default: false },
@@ -306,13 +327,17 @@ const accountSchema = new Schema(
     extra: { type: Schema.Types.Mixed, default: {} }, // columns of the sheet with no dedicated field
     // set when the account was created from the app's Accounts page
     provisionedAt: { type: Date, default: null },
-    welcomeDueAt: { type: Date, default: null },
+    welcomeDueAt: { type: Date, default: null, index: true }, // scheduler's "welcome due" check
     welcomeEmailSentAt: { type: Date, default: null },
-    welcomeResult: { type: String, default: "" },    state: { type: String, default: "" }, // Shopify customer state (ENABLED / INVITED / DISABLED)
+    welcomeResult: { type: String, default: "" },
+    state: { type: String, default: "" }, // Shopify customer state (ENABLED / INVITED / DISABLED)
     demo: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
+// Accounts page: newest first, optionally by role
+accountSchema.index({ createdAt: -1, _id: -1 });
+accountSchema.index({ role: 1, createdAt: -1, _id: -1 });
 export const Account = model("Account", accountSchema, "accounts");
 
 /** Sequential ids (PRA00001, CLN00001, DOC00001, PAT…, REP…) - replaces the
@@ -359,6 +384,9 @@ const productSchema = new Schema(
     price: { type: Number, default: 0 }, // first variant
     // custom.* money metafields the commission split reads
     wholesale: { type: Number, default: 0 },
+    // custom.mfg_cogs - wholesale price = this + the rep's $/unit
+    // (services/wholesale-price.server.js); null = not set
+    mfgCogs: { type: Number, default: null },
     physicianCommission: { type: Number, default: 0 },
     clinicCommission: { type: Number, default: 0 },
     metafields: { type: Schema.Types.Mixed, default: {} },
@@ -372,6 +400,8 @@ const productSchema = new Schema(
   },
   { timestamps: true },
 );
+// a practice's copy of one master product
+productSchema.index({ practiceId: 1, masterKey: 1 });
 export const Product = model("Product", productSchema, "products");
 
 /* ---------------------------------------------------------------------------
@@ -423,6 +453,7 @@ const aboutPageSchema = new Schema(
   { timestamps: true },
 );
 aboutPageSchema.index({ ownerType: 1, ownerId: 1 }, { unique: true });
+aboutPageSchema.index({ ownerType: 1, "data._doctorKey": 1 });
 export const AboutPage = model("AboutPage", aboutPageSchema, "about_pages");
 
 /** Referral / contact / support form entries. */
@@ -436,6 +467,8 @@ const formEntrySchema = new Schema(
   },
   { timestamps: true },
 );
+// Forms page: one form, newest first
+formEntrySchema.index({ form: 1, createdAt: -1 });
 export const FormEntry = model("FormEntry", formEntrySchema, "form_entries");
 
 /** Demo Practice / Clinic / Physician ids - hidden from finance, never paid. */
@@ -486,7 +519,10 @@ const logSchema = new Schema(
   },
   { versionKey: false },
 );
-export const Log = model("Log", logSchema, "logs");
+// Sync & logs page: newest first, optionally by type
+logSchema.index({ createdAt: -1, _id: -1 });
+logSchema.index({ type: 1, createdAt: -1, _id: -1 });
+export const Log =model("Log", logSchema, "logs");
 
 /** Webhook de-duplication (Shopify re-sends on a slow reply) + a failed-event
  *  list the admin can replay from. */
@@ -501,7 +537,9 @@ const webhookEventSchema = new Schema(
   },
   { versionKey: false },
 );
-export const WebhookEvent = model(
+// home page + Sync page "failed webhooks" count / list
+webhookEventSchema.index({ status: 1, createdAt: -1 });
+export const WebhookEvent =model(
   "WebhookEvent",
   webhookEventSchema,
   "webhook_events",

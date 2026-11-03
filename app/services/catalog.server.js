@@ -69,6 +69,8 @@ export const METAFIELD_COLUMNS = [
   { column: "Product Short Headline", key: "product_short_headline", type: "single_line_text_field" },
   { column: "Servings Per Container", key: "servings_per_container", type: "single_line_text_field" },
   { column: "Wholsale Price", key: "wholsale_price", type: "money" },
+  // wholesale price = MFG COGS + the practice's rep $/unit (wholesale-price.server.js)
+  { column: "MFG COGS", key: "mfg_cogs", type: "money" },
   { column: "MSRP High", key: "msrp_high", type: "money" },
   { column: "MSRP Low", key: "msrp_low", type: "money" },
   { column: "Peptides Support + Keywords", key: "peptides_support_keywords", type: "rich_text_field" },
@@ -232,7 +234,11 @@ export async function deleteMaster(masterKey) {
 function cellFromMetafield(def, mf) {
   if (!mf || mf.value == null || mf.value === "") return "";
   try {
-    if (def.type === "money") return String(JSON.parse(mf.value).amount ?? "");
+    if (def.type === "money") {
+      // a hand-made Decimal definition holds a plain number, not {amount}
+      const v = JSON.parse(mf.value);
+      return String(v && typeof v === "object" ? v.amount ?? "" : v);
+    }
     if (def.type === "rich_text_field") {
       const lines = [];
       const walk = (n) => {
@@ -450,6 +456,8 @@ function formatMetafieldValue(type, raw) {
   if (type === "money") {
     return JSON.stringify({ amount: v.replace(/[^0-9.]/g, "") || "0", currency_code: STORE_CURRENCY });
   }
+  if (type === "number_decimal") return v.replace(/[^0-9.-]/g, "") || "0";
+  if (type === "number_integer") return String(Math.round(Number(v.replace(/[^0-9.-]/g, "")) || 0));
   if (type.startsWith("list.")) {
     return JSON.stringify(v.split("|").map((x) => x.trim()).filter(Boolean));
   }
@@ -559,11 +567,15 @@ async function uploadFileFromUrl(url) {
 /** Writes every filled-in metafield column. Returns false on a user error,
  *  so the row is retried on the next run instead of being marked synced. */
 async function writeMetafields(productId, row) {
+  // know the store's real definition types before the first write
+  if (!liveMfTypes.size) await ensureProductMetafieldDefinitions().catch(() => null);
   const metafields = [];
   for (const def of METAFIELD_COLUMNS) {
     const raw = row[def.column];
     if (raw == null || String(raw).trim() === "") continue;
-    metafields.push({ ownerId: productId, namespace: "custom", key: def.key, type: def.type, value: formatMetafieldValue(def.type, raw) });
+    // a definition made by hand in Shopify with another type (e.g. Decimal) wins
+    const type = liveMfTypes.get(def.key) || def.type;
+    metafields.push({ ownerId: productId, namespace: "custom", key: def.key, type, value: formatMetafieldValue(type, raw) });
   }
   for (const def of METAFIELD_REF_COLUMNS) {
     const raw = String(row[def.column] ?? "").trim();
@@ -1235,6 +1247,10 @@ async function deletePracticeProducts(practiceId) {
    on theme push), and admin shows them as unstructured.
    quality_trust_block (metaobject_reference) is left out - it needs the
    metaobject definition it points to, which only the live store has. */
+// custom.<key> -> the type its definition really has in the store (filled by
+// ensureProductMetafieldDefinitions); writeMetafields uses it over ours.
+const liveMfTypes = new Map();
+
 const PRODUCT_METAFIELD_DEFS = [
   ...METAFIELD_COLUMNS.map((d) => ({ key: d.key, name: d.column, type: d.type })),
   { key: "ingredient_facts_image", name: "Ingredient Facts Image", type: "file_reference" },
@@ -1254,6 +1270,7 @@ export async function ensureProductMetafieldDefinitions() {
     }`,
   );
   const have = new Map((data.metafieldDefinitions?.nodes || []).map((n) => [n.key, n.type?.name]));
+  for (const [k, t] of have) if (t) liveMfTypes.set(k, t);
   const out = { created: [], existing: have.size, failed: [] };
   for (const d of PRODUCT_METAFIELD_DEFS) {
     if (have.has(d.key)) {
