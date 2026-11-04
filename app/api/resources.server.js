@@ -1,6 +1,5 @@
 import { loadAbout, publicAbout, saveAbout, uploadAboutImage } from "../services/about.server";
 import { getAccount, markGettingStartedSeen, orderHistory, updateAccount } from "../services/account.server";
-import { wholesalePricesFor } from "../services/wholesale-price.server";
 import { loadBanking, saveBanking } from "../services/banking.server";
 import {
   ApiError,
@@ -18,7 +17,6 @@ import {
   financeDashboard,
   financeOrderDetail,
   setPayoutStatus,
-  setRepRate,
   uploadPayoutsCsv,
 } from "../services/dashboards/finance.server";
 import {
@@ -240,16 +238,6 @@ const account = {
     requireLogin(caller);
     return markGettingStartedSeen(caller.customerId);
   },
-  // Wholesale page: MFG COGS + this customer's rep $/unit for the listed
-  // products (ids=1,2,3). Always the caller's OWN practice / clinic - ids the
-  // page sends are never trusted for this.
-  wholesalePrices: ({ p, caller }) => {
-    requireLogin(caller);
-    return wholesalePricesFor(
-      { practiceId: caller.practiceId, clinicId: caller.clinicId || caller.clinicIds?.[0] || "" },
-      String(p.ids || "").split(","),
-    );
-  },
   orderHistory: ({ p, caller }) => {
     requireLogin(caller);
     return orderHistory(caller.customerId, {
@@ -398,10 +386,6 @@ const finance = {
   uploadPayoutsCsv: ({ p, caller }) => {
     requireFinance(caller);
     return uploadPayoutsCsv(p);
-  },
-  setRepRate: ({ p, caller }) => {
-    requireFinance(caller);
-    return setRepRate(p, caller.customerId);
   },
 };
 

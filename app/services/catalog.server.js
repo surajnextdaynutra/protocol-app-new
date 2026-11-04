@@ -69,8 +69,6 @@ export const METAFIELD_COLUMNS = [
   { column: "Product Short Headline", key: "product_short_headline", type: "single_line_text_field" },
   { column: "Servings Per Container", key: "servings_per_container", type: "single_line_text_field" },
   { column: "Wholsale Price", key: "wholsale_price", type: "money" },
-  // wholesale price = MFG COGS + the practice's rep $/unit (wholesale-price.server.js)
-  { column: "MFG COGS", key: "mfg_cogs", type: "money" },
   { column: "MSRP High", key: "msrp_high", type: "money" },
   { column: "MSRP Low", key: "msrp_low", type: "money" },
   { column: "Peptides Support + Keywords", key: "peptides_support_keywords", type: "rich_text_field" },

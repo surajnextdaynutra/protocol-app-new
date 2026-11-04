@@ -287,8 +287,6 @@ const salesRepSchema = new Schema(
     customerId: { type: String, default: "" },
     assignedPracticeIds: { type: [String], default: [], index: true }, // practice_id OR clinic_id values
     commissionPercent: { type: Number, default: null },
-    // $ per product unit for THIS rep; null = the COMMISSION_PER_UNIT default
-    commissionPerUnit: { type: Number, default: null },
     notes: { type: String, default: "" },
     active: { type: Boolean, default: true },
   },
@@ -384,9 +382,6 @@ const productSchema = new Schema(
     price: { type: Number, default: 0 }, // first variant
     // custom.* money metafields the commission split reads
     wholesale: { type: Number, default: 0 },
-    // custom.mfg_cogs - wholesale price = this + the rep's $/unit
-    // (services/wholesale-price.server.js); null = not set
-    mfgCogs: { type: Number, default: null },
     physicianCommission: { type: Number, default: 0 },
     clinicCommission: { type: Number, default: 0 },
     metafields: { type: Schema.Types.Mixed, default: {} },

@@ -390,7 +390,7 @@ async function importMasters(csvText) {
   const rows = parseCsv(csvText);
   if (rows.length < 2) return { rows: 0, imported: 0 };
   const headers = rows[0].map((h) => String(h || "").trim());
-  // A file without the full sheet's columns (e.g. just Title + MFG COGS) only
+  // A file without the full sheet's columns (e.g. just Title + Wholsale Price) only
   // UPDATES existing masters - it never creates a product from a half row.
   const fullSheet = headers.includes("Price");
   const masters = await MasterProduct.find({}, { masterKey: 1, row: 1 }).lean();

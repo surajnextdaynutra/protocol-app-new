@@ -5,7 +5,6 @@ import { applyViewerEarnings, productKey } from "./earnings.server";
 import { copyMasterKey, tagVal } from "./ids.server";
 import { logEvent } from "./log.server";
 import { escQ, gid, gql, gqlAll, legacyId, metafieldsSet } from "./shopify-admin.server";
-import { mfgCogsFor, salesCommissionFor, wholesalePrice } from "./wholesale-price.server";
 
 /* Product catalogue + Product Management (pricing / commission).
 
@@ -19,7 +18,6 @@ const STORE_CURRENCY = "USD";
 // custom.* metafields mirrored on every product.
 const MF_KEYS = [
   "wholsale_price", // sic - the store's key really is spelled this way
-  "mfg_cogs", // wholesale price = MFG COGS + rep $/unit (wholesale-price.server.js)
   "msrp_low",
   "msrp_high",
   "patient_price",
@@ -118,7 +116,6 @@ function productDoc(n) {
     variants,
     price: variants[0]?.price || 0,
     wholesale: mfNumber(mf("wholsale_price")) || 0,
-    mfgCogs: mfNumber(mf("mfg_cogs")),
     physicianCommission: mfNumber(mf("physician_commission")) || 0,
     clinicCommission: mfNumber(mf("clinic_commission")) || 0,
     metafields: {
@@ -279,13 +276,6 @@ export async function listPracticeProducts(doctorId, clinicId, practiceId, viewe
     .sort({ title: 1 })
     .lean();
   const borrowed = await masterImages(rows);
-  // Cost = MFG COGS + this practice's rep $/unit (default $1); a product
-  // without MFG COGS keeps its custom.wholsale_price
-  const { rate } = await salesCommissionFor({
-    practiceId: practiceId || rows.find((r) => r.practiceId)?.practiceId || "",
-    clinicId,
-  });
-  const cogs = await mfgCogsFor(rows);
 
   const products = rows.map((p) => {
     const m = p.metafields || {};
@@ -299,7 +289,7 @@ export async function listPracticeProducts(doctorId, clinicId, practiceId, viewe
       sku: variant.sku || "",
       image: p.image || borrowed.get(p.masterKey) || "",
       price: patientPrice != null ? patientPrice : price,
-      cost: wholesalePrice(cogs[p.productId], rate, m.cost != null ? m.cost : 0),
+      cost: m.cost != null ? m.cost : 0,
       msrpLow: msrpLow != null ? msrpLow : 0,
       msrpHigh: m.msrpHigh != null ? m.msrpHigh : 0,
       patientPrice: patientPrice != null ? patientPrice : msrpLow != null ? msrpLow : price,

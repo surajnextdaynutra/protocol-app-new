@@ -28,7 +28,7 @@ const CACHEABLE = {
   clinic: ["dashboard", "getAccount"],
   rep: ["repdash"],
   finance: ["admindash", "orderDetail"],
-  account: ["getAccount", "orderHistory", "wholesalePrices"],
+  account: ["getAccount", "orderHistory"],
   about: ["aboutUsLoad", "aboutUsPublic"],
   physicians: ["customers", "refLookup"],
 };

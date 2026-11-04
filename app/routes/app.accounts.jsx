@@ -187,7 +187,7 @@ export const action = async ({ request }) => {
       } else if (res.products) {
         message += ` · Product copies: ${res.products} selected product${res.products === 1 ? "" : "s"}.`;
       }
-      return { ok: true, message };
+      return { ok: true, message, created: true };
     }
     // Bulk accounts from a CSV: preview (nothing created), then import.
     if (intent === "bulk-preview") {
@@ -221,13 +221,22 @@ export const action = async ({ request }) => {
   return { ok: false, message: "Unknown action" };
 };
 
-function CreateForm({ data, busy, onBulk }) {
-  const [v, setV] = useState({
-    role: "Practice", firstName: "", lastName: "", email: "", clinicLocation: "",
-    repId: "", parentPracticeId: "", parentClinicId: "", sendWelcome: true,
-  });
+const EMPTY_CREATE = {
+  role: "Practice", firstName: "", lastName: "", email: "", clinicLocation: "",
+  repId: "", parentPracticeId: "", parentClinicId: "", sendWelcome: true,
+};
+
+function CreateForm({ data, busy, onBulk, result }) {
+  const [v, setV] = useState(EMPTY_CREATE);
   const [productMode, setProductMode] = useState("all");
   const [picked, setPicked] = useState([]);
+  // account created -> empty the form for the next one (the role stays picked)
+  useEffect(() => {
+    if (!result?.ok || !result.created) return;
+    setV((s) => ({ ...EMPTY_CREATE, role: s.role }));
+    setProductMode("all");
+    setPicked([]);
+  }, [result]);
   const set = (k) => (val) => setV((s) => ({ ...s, [k]: val }));
   const creating = useBusy("create");
   const needsPractice = v.role === "Clinic";
@@ -695,7 +704,7 @@ export default function Accounts() {
       <BlockStack gap="400">
         <ActionResult data={actionData} />
         <SyncStatus sync={data.sync} />
-        <CreateForm data={data} busy={busy} onBulk={() => setBulkOpen(true)} />
+        <CreateForm data={data} busy={busy} onBulk={() => setBulkOpen(true)} result={actionData} />
         <BulkModal open={bulkOpen} data={data} onClose={(imported) => { setBulkOpen(false); if (imported) revalidator.revalidate(); }} />
         <Card>
           <Form method="get">
