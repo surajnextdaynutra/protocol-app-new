@@ -252,6 +252,25 @@ async function masterImages(rows) {
   return out;
 }
 
+/** masterKey -> the MAIN (base) product's Shopify price. The base product is
+ *  the one tagged rxbase:<key> with no practice_id; practice copies show its
+ *  price as their "Cost". */
+async function mainProductPrices(rows) {
+  const keys = [...new Set(rows.map((p) => p.masterKey).filter(Boolean))];
+  const out = new Map();
+  if (!keys.length) return out;
+  const found = await Product.find(
+    { practiceId: { $in: ["", null] }, tags: { $in: keys.map((k) => `rxbase:${k}`) } },
+    { tags: 1, variants: 1 },
+  ).lean();
+  for (const f of found) {
+    const key = tagVal(f.tags, "rxbase:");
+    const price = Number(f.variants?.[0]?.price);
+    if (key && price > 0 && !out.has(key)) out.set(key, price);
+  }
+  return out;
+}
+
 /**
  * Products for the "Product Management" tab. practice_id is preferred (one
  * shared product set per practice); clinic_id / doctor_id only match legacy
@@ -276,6 +295,7 @@ export async function listPracticeProducts(doctorId, clinicId, practiceId, viewe
     .sort({ title: 1 })
     .lean();
   const borrowed = await masterImages(rows);
+  const mainPrices = await mainProductPrices(rows);
 
   const products = rows.map((p) => {
     const m = p.metafields || {};
@@ -289,7 +309,9 @@ export async function listPracticeProducts(doctorId, clinicId, practiceId, viewe
       sku: variant.sku || "",
       image: p.image || borrowed.get(p.masterKey) || "",
       price: patientPrice != null ? patientPrice : price,
-      cost: m.cost != null ? m.cost : 0,
+      // Cost = the main (base) product's price; the copy's own wholesale
+      // metafield only when no base product is found.
+      cost: mainPrices.get(p.masterKey) ?? (m.cost != null ? m.cost : 0),
       msrpLow: msrpLow != null ? msrpLow : 0,
       msrpHigh: m.msrpHigh != null ? m.msrpHigh : 0,
       patientPrice: patientPrice != null ? patientPrice : msrpLow != null ? msrpLow : price,

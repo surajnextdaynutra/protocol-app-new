@@ -323,6 +323,14 @@ export async function tagRxCustomer(o, ids, demo) {
       return tl.startsWith("practice_id:") || tl.startsWith("clinic_id:");
     });
     const isPracticeMasterShaped = !currentDoctorId && hasPracticeOrClinic;
+    // A portal account (practice / clinic / provider / rep / admin) buying as
+    // a patient: its practice_id / clinic_id / doctor_id are ITS OWN ids, not
+    // the prescriber's - rewriting them moved a Practice + Provider into
+    // another practice (and left its own practice with no account).
+    const isPortalAccount = tags.some((t) => {
+      const tl = String(t).trim().toLowerCase();
+      return ["wholesale", "wholesale_rep", "finance_admin"].includes(tl) || /^(rep_id|admin_id):/.test(tl);
+    });
     const isDoctorIdChanging =
       currentDoctorId &&
       ids.doctorId &&
@@ -333,7 +341,11 @@ export async function tagRxCustomer(o, ids, demo) {
 
     addTag(tags, "rx");
     if (ids.patientId) addTag(tags, "patient");
-    if (isPracticeMasterShaped && ids.doctorId) {
+    if (isPortalAccount) {
+      if (ids.doctorId || ids.clinicId || ids.practiceId) {
+        logEvent("customer-tag", customerId, `kept own ids - portal account, order ${o.name || o.id} ids not written onto the customer`);
+      }
+    } else if (isPracticeMasterShaped && ids.doctorId) {
       logEvent("customer-tag", customerId, `blocked doctor_id:${ids.doctorId} (Practice Master guard, order ${o.id})`);
     } else if (collision) {
       logEvent("customer-tag", customerId, `BLOCKED doctor_id change ${currentDoctorId} -> ${ids.doctorId} - already belongs to another customer (order ${o.id})`);
@@ -341,8 +353,10 @@ export async function tagRxCustomer(o, ids, demo) {
       setIdTag(tags, DOCTOR_TAG, ids.doctorId);
     }
     setIdTag(tags, "patient_id:", ids.patientId);
-    setIdTag(tags, "clinic_id:", ids.clinicId);
-    setIdTag(tags, "practice_id:", ids.practiceId);
+    if (!isPortalAccount) {
+      setIdTag(tags, "clinic_id:", ids.clinicId);
+      setIdTag(tags, "practice_id:", ids.practiceId);
+    }
 
     if (tagsFingerprint(tags) === before) {
       await kvSet(doneKey, 1, 21600);

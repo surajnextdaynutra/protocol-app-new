@@ -230,10 +230,13 @@ export function validateReferral(data) {
     else if (!re.test(s)) errs[k] = msg;
     else if (!/\p{L}/u.test(s)) errs[k] = "Must include at least one letter.";
   };
-  text("practiceName", 2, 100, /^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 &.,'()/-]*$/u, "Use letters, numbers, spaces and & . , ' - ( ) / only.");
+  // no numbers in the practice / provider name
+  text("practiceName", 2, 100, /^[\p{L}\p{M}][\p{L}\p{M} &.,'()/-]*$/u,
+    /\d/.test(v("practiceName")) ? "Numbers are not allowed in the name." : "Use letters, spaces and & . , ' - ( ) / only.");
   text("clinicLocation", 2, 100, /^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 #&.,'()/-]*$/u, "Use letters, numbers, spaces and # & . , ' - ( ) / only.");
-  text("contactFirstName", 1, 50, /^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u, "Use letters, spaces and . ' - only.");
-  text("contactLastName", 1, 50, /^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u, "Use letters, spaces and . ' - only.");
+  const personMsg = (k) => (/\d/.test(v(k)) ? "Numbers are not allowed in the name." : "Use letters, spaces and . ' - only.");
+  text("contactFirstName", 1, 50, /^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u, personMsg("contactFirstName"));
+  text("contactLastName", 1, 50, /^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u, personMsg("contactLastName"));
   const email = v("contactEmail");
   if (!email) errs.contactEmail = "This field is required.";
   else if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@.]{2,}$/.test(email)) {
