@@ -108,7 +108,7 @@ export async function repDashboard({
   rep = String(rep || "").trim();
   const doctorFilterArr = csvToArr(doctor);
   const clinicFilterArr = csvToArr(clinic);
-  practiceFilter = String(practiceFilter || "").trim();
+  const practiceFilterArr = csvToArr(practiceFilter);
   statusFilter = String(statusFilter || "").trim();
   days = Number(days) || 0;
   fromMs = Number(fromMs) || 0;
@@ -219,7 +219,7 @@ export async function repDashboard({
   for (const d of repDoctors) {
     if (doctorFilterArr.length && !doctorFilterArr.includes(d.doctorId)) continue;
     if (clinicFilterArr.length && !clinicFilterArr.includes(d.clinicId)) continue;
-    if (practiceFilter && d.practiceId !== practiceFilter) continue;
+    if (practiceFilterArr.length && !practiceFilterArr.includes(d.practiceId)) continue;
     docInfo[d.doctorId] = d;
     clinicOf[d.doctorId] = d.clinicId || "";
     doctorIds.push(d.doctorId);
@@ -348,7 +348,7 @@ export async function repDashboard({
   if (pIds.length) extraOr.push({ practiceId: { $in: pIds } }, { wsPracticeId: { $in: pIds } });
   const extraOrders = (await findOrders({ $or: extraOr }, range)).map(repOrder);
 
-  const anyEntityFilter = !!(doctorFilterArr.length || clinicFilterArr.length || practiceFilter);
+  const anyEntityFilter = !!(doctorFilterArr.length || clinicFilterArr.length || practiceFilterArr.length);
   const docOfRep = {};
   const practiceOfClinic = {};
   for (const d of repDoctors) {
@@ -362,7 +362,7 @@ export async function repDashboard({
     const practiceId = o.practice || d.practiceId || practiceOfClinic[clinicId] || "";
     if (doctorFilterArr.length && !doctorFilterArr.includes(o.doctor || "")) return false;
     if (clinicFilterArr.length && !clinicFilterArr.includes(clinicId)) return false;
-    if (practiceFilter && practiceId !== practiceFilter) return false;
+    if (practiceFilterArr.length && !practiceFilterArr.includes(practiceId)) return false;
     return true;
   };
 

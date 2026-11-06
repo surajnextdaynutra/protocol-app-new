@@ -330,6 +330,8 @@ const accountSchema = new Schema(
     welcomeResult: { type: String, default: "" },
     state: { type: String, default: "" }, // Shopify customer state (ENABLED / INVITED / DISABLED)
     demo: { type: Boolean, default: false },
+    // "<role>|<email>" last written to Brevo's USER_ROLE - skips re-sending unchanged contacts
+    brevoRole: { type: String, default: "" },
   },
   { timestamps: true },
 );

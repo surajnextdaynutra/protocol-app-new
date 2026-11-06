@@ -1,7 +1,7 @@
 /* global globalThis */
 import cron from "node-cron";
 import { runProductSync, syncSharedInventory } from "./catalog.server";
-import { syncAllAccounts } from "./accounts.server";
+import { syncAllAccounts, syncAllBrevoRoles } from "./accounts.server";
 import { logEvent } from "./log.server";
 import { syncRecentOrders } from "./orders.server";
 import { runPrescriptionReminders } from "./prescriptions.server";
@@ -30,6 +30,8 @@ const JOBS = [
   // one shared stock number across every copy of a master
   { name: "shared-inventory", schedule: "*/5 * * * *", run: syncSharedInventory },
   { name: "price-reconcile", schedule: "25 * * * *", run: reconcilePatientPrices },
+  // manual: writes USER_ROLE onto every existing Brevo contact (webhooks keep it current after)
+  { name: "brevo-roles", run: syncAllBrevoRoles },
 ];
 
 const running = new Set();

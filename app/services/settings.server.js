@@ -60,6 +60,8 @@ export const SETTINGS_DEFAULTS = [
   ["BREVO_SENDER_EMAIL", "", "A sender address verified in Brevo.", "brevo"],
   ["BREVO_SENDER_NAME", "Protocol Therapeutics", "Display name on outgoing email.", "brevo"],
   ["BREVO_SMS_SENDER", "Rx", "Approved Brevo SMS sender - letters/digits only, max 11 characters.", "brevo"],
+  ["BREVO_ROLE_SYNC", "TRUE", "TRUE/FALSE - keep each Brevo contact's USER_ROLE attribute (Patient / Provider / Clinic / Practice / Sales Rep) in step with the Shopify customer's tags. Existing contacts: run the \"brevo-roles\" job once on Sync & logs.", "brevo"],
+  ["BREVO_ROLE_LISTS_JSON", "", 'Optional JSON map of role -> Brevo list id, to also file each contact in its role\'s list, e.g. {"Patient":12,"Provider":13,"Clinic":14,"Practice":15,"Sales Rep":16}. Blank = attribute only.', "brevo"],
   // --- website forms
   ["SALES_EMAIL", "onboarding@protocoltherapeutics.com", "Where New Client / Sales Referral submissions are emailed.", "forms"],
   ["CONTACT_EMAIL", "sales@protocoltherapeutics.com", "Where contact / support form submissions are emailed.", "forms"],

@@ -162,6 +162,85 @@ export async function sendSms(phone, message) {
   }
 }
 
+/* ----------------------- contact role (USER_ROLE) ------------------------ */
+
+/* Every contact the app knows the role of carries a USER_ROLE text attribute
+   (Patient / Provider / Clinic / Practice / Sales Rep / ...), so Brevo can
+   filter, segment and search by user type. Optionally each role also has its
+   own Brevo list (BREVO_ROLE_LISTS_JSON). Calls run one at a time - a full
+   re-sync pushes hundreds of contacts and Brevo rate-limits bursts. */
+
+export const BREVO_ROLE_ATTRIBUTE = "USER_ROLE";
+
+let roleAttrReady = false;
+async function ensureRoleAttribute(apiKey) {
+  if (roleAttrReady) return;
+  const res = await fetch(`${BREVO}/contacts/attributes/normal/${BREVO_ROLE_ATTRIBUTE}`, {
+    method: "POST",
+    headers: { "api-key": apiKey, accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ type: "text" }),
+    signal: AbortSignal.timeout(15000),
+  });
+  // 201 = created now; 400 = it already exists - both fine
+  if (res.ok || res.status === 400) roleAttrReady = true;
+}
+
+function roleLists(cfg) {
+  try {
+    const map = JSON.parse(cfg.BREVO_ROLE_LISTS_JSON || "{}");
+    const out = {};
+    for (const [role, id] of Object.entries(map || {})) if (Number(id)) out[role] = Number(id);
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+let roleQueue = Promise.resolve();
+
+/**
+ * Creates / updates the Brevo contact for `email` with its role. Resolves
+ * true when Brevo accepted it, false when skipped or failed (logged) - never
+ * throws, contact tagging must not break the caller.
+ */
+export function setBrevoContactRole({ email, first, last, role }) {
+  const run = async () => {
+    email = String(email || "").trim().toLowerCase();
+    if (!email || !role) return false;
+    const cfg = await getSettings();
+    if (READ_ONLY || !cfg.BREVO_API_KEY || !isTrue(cfg.BREVO_ROLE_SYNC ?? "TRUE")) return false;
+    try {
+      await ensureRoleAttribute(cfg.BREVO_API_KEY);
+      const attributes = { [BREVO_ROLE_ATTRIBUTE]: role };
+      if (first) attributes.FIRSTNAME = first;
+      if (last) attributes.LASTNAME = last;
+      const payload = { email, attributes, updateEnabled: true };
+      const lists = roleLists(cfg);
+      if (lists[role]) payload.listIds = [lists[role]];
+      await brevoPost("/contacts", cfg.BREVO_API_KEY, payload);
+      // A changed role leaves the other roles' lists (update call only -
+      // create doesn't take unlinkListIds). Best-effort: Brevo refuses it
+      // when the contact isn't in those lists, which is the usual case.
+      const others = Object.entries(lists).filter(([r]) => r !== role).map(([, id]) => id);
+      if (others.length) {
+        await fetch(`${BREVO}/contacts/${encodeURIComponent(email)}?identifierType=email_id`, {
+          method: "PUT",
+          headers: { "api-key": cfg.BREVO_API_KEY, accept: "application/json", "content-type": "application/json" },
+          body: JSON.stringify({ unlinkListIds: others }),
+          signal: AbortSignal.timeout(15000),
+        }).catch(() => {});
+      }
+      return true;
+    } catch (err) {
+      logEvent("error", email, `Brevo role "${role}": ${String(err?.message || err).slice(0, 300)}`, null, false);
+      return false;
+    }
+  };
+  const p = roleQueue.then(run, run);
+  roleQueue = p.catch(() => {});
+  return p;
+}
+
 /** Shortens a link for SMS via TinyURL; falls back to the long URL. */
 export async function shortenUrl(longUrl) {
   longUrl = String(longUrl || "").trim();

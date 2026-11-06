@@ -3,6 +3,7 @@ import { Account, SalesRep } from "../models/index.server";
 import { forgetCustomer } from "./caller.server";
 import { DOCTOR_TAG, hasTag, idsFromCustomerTags, tagList } from "./ids.server";
 import { logEvent } from "./log.server";
+import { setBrevoContactRole } from "./brevo.server";
 import { READ_ONLY, getCustomer, gqlAll, legacyId, setCustomerTags } from "./shopify-admin.server";
 import { invalidateResponses } from "./response-cache.server";
 
@@ -28,6 +29,36 @@ const isPortalUser = (tags) => {
   if (ids.patient && !ids.wholesale && !ids.repId) return false;
   return ids.wholesale || !!ids.repId || hasTag(tags, "wholesale_rep") || ids.finance;
 };
+
+/** The user type shown on the customer's Brevo contact (USER_ROLE): the
+ *  portal role (Physician is "Provider" in all visible text), "Patient" for
+ *  a patient, "Demo" for the demo personas and their patients, or "" when
+ *  the tags say nothing (a plain shopper - left untouched in Brevo). */
+export function brevoRoleFromTags(tags) {
+  tags = tagList(tags);
+  const ids = idsFromCustomerTags(tags);
+  if (ids.demo) return "Demo";
+  if (isPortalUser(tags)) {
+    const role = roleFromTags(tags);
+    return role === "Physician" ? "Provider" : role;
+  }
+  return ids.patient ? "Patient" : "";
+}
+
+// Patients have no account document to remember what Brevo was last sent,
+// so this process remembers it (a restart re-sends once - harmless).
+const patientBrevoSent = new Map();
+
+/** Writes the role to Brevo when it changed; never blocks the caller. */
+function pushBrevoRole({ email, first, last, role, sent, onSent }) {
+  email = String(email || "").trim().toLowerCase();
+  if (!email || !role) return;
+  const sig = role + "|" + email;
+  if (sent === sig) return;
+  setBrevoContactRole({ email, first, last, role })
+    .then((ok) => ok && onSent && onSent(sig))
+    .catch(() => {});
+}
 
 /** Normalised customer ({id, first, last, email, phone, tags, state,
  *  address}) -> upsert / remove its account document. */
@@ -57,6 +88,11 @@ export async function upsertAccount(c) {
   let tags = tagList(c.tags);
   if (!isPortalUser(tags)) {
     await Account.deleteOne({ customerId });
+    const key = String(c.email || "").trim().toLowerCase();
+    pushBrevoRole({
+      email: key, first: c.first, last: c.last, role: brevoRoleFromTags(tags),
+      sent: patientBrevoSent.get(key), onSent: (sig) => patientBrevoSent.set(key, sig),
+    });
     return null;
   }
   tags = await renameDoctorTag(customerId, c.email, tags);
@@ -82,12 +118,19 @@ export async function upsertAccount(c) {
   };
   const existing = await Account.findOne(
     { customerId },
-    { email: 1, role: 1, provisionedAt: 1, first: 1, last: 1 },
+    { email: 1, role: 1, provisionedAt: 1, first: 1, last: 1, brevoRole: 1 },
   ).lean();
   // An account created from the Accounts page keeps the role it was created
   // with ("Practice + Doctor", "Master Clinic", ...).
   if (existing?.provisionedAt && existing.role) doc.role = existing.role;
   await Account.updateOne({ customerId }, { $set: doc }, { upsert: true });
+
+  // Brevo contact's USER_ROLE - only when the role or email changed
+  pushBrevoRole({
+    email: doc.email, first: doc.first, last: doc.last, role: brevoRoleFromTags(tags),
+    sent: existing?.brevoRole,
+    onSent: (sig) => Account.updateOne({ customerId }, { $set: { brevoRole: sig } }).catch(() => {}),
+  });
 
   // Any portal account with a practice_id (the Practice itself, or a clinic /
   // physician under it) gives that practice its product copies - straight
@@ -272,4 +315,58 @@ export async function syncAllAccounts() {
   logEvent("job", "account-sync",
     `accounts=${seen.length + confirmedLive} removed=${removed} keptAfterLiveCheck=${confirmedLive} salesRepsRemoved=${repsRemoved}`);
   return { synced: seen.length + confirmedLive, removed, repsRemoved };
+}
+
+/**
+ * One-off backfill (the "brevo-roles" job): writes USER_ROLE onto the Brevo
+ * contact of every portal account and every patient customer, whether or
+ * not it changed. New and edited customers are kept current by the
+ * customers/* webhooks after that.
+ */
+export async function syncAllBrevoRoles() {
+  await connectDb();
+  let sent = 0;
+  let failed = 0;
+  let skipped = 0;
+  const push = async (c, onSent) => {
+    const role = brevoRoleFromTags(c.tags);
+    const email = String(c.email || "").trim().toLowerCase();
+    if (!role || !email) {
+      skipped++;
+      return;
+    }
+    const ok = await setBrevoContactRole({ email, first: c.first, last: c.last, role });
+    if (ok) {
+      sent++;
+      if (onSent) await onSent(role + "|" + email);
+    } else failed++;
+  };
+
+  const accounts = await Account.find({}, { customerId: 1, email: 1, first: 1, last: 1, tags: 1 }).lean();
+  for (const a of accounts) {
+    await push(a, (sig) => Account.updateOne({ _id: a._id }, { $set: { brevoRole: sig } }));
+  }
+
+  const patients = await gqlAll(
+    `#graphql
+    query RxBrevoPatients($after: String, $query: String!) {
+      customers(first: 100, after: $after, query: $query) {
+        pageInfo { hasNextPage endCursor }
+        nodes { firstName lastName email tags }
+      }
+    }`,
+    { query: "tag:'patient'" },
+    (d) => d.customers,
+    { max: 50000 },
+  );
+  for (const p of patients) {
+    const key = String(p.email || "").trim().toLowerCase();
+    await push({ email: p.email, first: p.firstName, last: p.lastName, tags: p.tags }, (sig) => {
+      patientBrevoSent.set(key, sig);
+    });
+  }
+
+  const result = { accounts: accounts.length, patients: patients.length, sent, failed, skipped };
+  logEvent("job", "brevo-roles", JSON.stringify(result), null, failed === 0);
+  return result;
 }
